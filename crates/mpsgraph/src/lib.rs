@@ -250,6 +250,9 @@ mod tests {
             println!("{}: first tile (compiles the graph) {:.0} ms", r.adapter(), t.elapsed().as_secs_f64() * 1000.0);
             let e = worst(&got, &want);
             println!("{}: worst difference {e:e} of the output's size", r.adapter());
+            if !got.iter().all(|v| v.is_finite()) {
+                println!("{}: numbers that are not finite (past f16's 65504?); the engine would not use it", r.adapter());
+            }
             let mut times: Vec<f64> = (0..8)
                 .map(|_| {
                     let t = Instant::now();

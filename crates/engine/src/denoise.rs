@@ -272,8 +272,9 @@ enum CardBackend {
 }
 
 /// The card runners to try, in order: on a Mac MPSGraph first, then the wgpu kernels. `LIGHTCRAFT_DENOISE_GPU=mps` or
-/// `=wgpu` keeps only that one (to compare them); `LIGHTCRAFT_DENOISE_PRECISION=f16` makes MPSGraph compute in half
-/// precision (default f32; the check tile must still agree with the CPU).
+/// `=wgpu` keeps only that one (to compare them); `LIGHTCRAFT_DENOISE_PRECISION=f16` tries MPSGraph in half precision
+/// before f32 (the check tile must still agree with the CPU: RawNIND, whose answer is at a scale of 1e6, overflows f16's
+/// 65504 and falls through to f32).
 #[cfg(feature = "denoise")]
 fn card_backends() -> Vec<CardBackend> {
     let only = std::env::var("LIGHTCRAFT_DENOISE_GPU").unwrap_or_default().trim().to_ascii_lowercase();
@@ -283,10 +284,14 @@ fn card_backends() -> Vec<CardBackend> {
             .ok()
             .and_then(|p| lightcraft_mpsgraph::Precision::parse(&p.to_ascii_lowercase()))
             .unwrap_or_default();
+        let mut mps = vec![CardBackend::Mps(precision)];
+        if precision != lightcraft_mpsgraph::Precision::F32 {
+            mps.push(CardBackend::Mps(lightcraft_mpsgraph::Precision::F32));
+        }
         match only.as_str() {
-            "mps" => vec![CardBackend::Mps(precision)],
+            "mps" => mps,
             "wgpu" => vec![CardBackend::Wgpu],
-            _ => vec![CardBackend::Mps(precision), CardBackend::Wgpu],
+            _ => mps.into_iter().chain([CardBackend::Wgpu]).collect(),
         }
     }
     #[cfg(not(target_os = "macos"))]

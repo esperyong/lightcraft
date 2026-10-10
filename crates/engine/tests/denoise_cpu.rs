@@ -113,16 +113,21 @@ fn denoise_stage_compares_cpu_and_gpu() {
         match lightcraft_mpsgraph::runner(cpu.net(), 512, precision) {
             Ok(mps) => {
                 let name = mps.adapter();
-                let tile_error = relative(&want, &mps.run(&x).unwrap());
+                // as the engine checks a card: finite numbers, within 1e-3 of the CPU (f16 overflows on a model whose
+                // answer is at a scale of 1e6, past f16's 65504)
+                let check = mps.run(&x).ok().filter(|out| out.iter().all(|v| v.is_finite()));
+                let tile_error = check.as_ref().map_or(f32::INFINITY, |out| relative(&want, out));
                 println!("CPU/check tile vs {name}: {tile_error:e}");
+                if tile_error.is_nan() || tile_error > 1e-3 {
+                    assert!(precision != lightcraft_mpsgraph::Precision::F32, "{name} does not give the CPU answer ({tile_error:e})");
+                    println!("{name}: its check tile is not the CPU's, so the engine passes it over (no whole-photo run)");
+                    continue;
+                }
                 tile_time(&name, &mps, &x);
                 let answer = photo_time(&name, &mps, &raw, layout, &Params { parallel: 4, ..p });
                 let a: Vec<_> = done.data.iter().flatten().copied().collect();
                 let b: Vec<_> = answer.data.iter().flatten().copied().collect();
                 println!("CPU/whole photo vs {name}: {:e}", relative(&a, &b));
-                if precision == lightcraft_mpsgraph::Precision::F32 {
-                    assert!(tile_error <= 1e-3, "{name} does not give the CPU answer ({tile_error:e})");
-                }
             }
             Err(e) => println!("MPSGraph unavailable: {e}"),
         }

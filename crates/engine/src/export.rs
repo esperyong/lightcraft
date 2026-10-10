@@ -1550,7 +1550,8 @@ pub fn run_batch(
 ) -> Result<Vec<serde_json::Value>, String> {
     let plan = batch_plan(&items);
     if items.len() > 1 {
-        log::debug!("export: {} photos, up to {} at once in {} MB", items.len(), plan.jobs, plan.room >> 20);
+        let room = if plan.room == usize::MAX { "memory not counted".to_string() } else { format!("within {} MB", plan.room >> 20) };
+        log::debug!("export: {} photos, up to {} at once ({room})", items.len(), plan.jobs);
     }
     run_batch_with(items, plan, o, to, write, exists, stop_on_error, progress)
 }

@@ -24,6 +24,13 @@ fn agree(a: &[f32], b: &[f32]) -> f32 {
     assert!(error <= 1e-3, "maximum relative error {error:e}");
     error
 }
+/// Largest difference as a share of `a`'s largest value, without a bound (for f16).
+#[allow(dead_code)]
+fn relative(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    let scale = a.iter().fold(1e-6f32, |m, v| m.max(v.abs()));
+    a.iter().zip(b).fold(0f32, |m, (a, b)| m.max((a - b).abs())) / scale
+}
 fn tile_time(name: &str, r: &dyn TileRunner, x: &[f32]) {
     r.run(x).unwrap();
     let mut times: Vec<_> = (0..5)
@@ -98,5 +105,26 @@ fn denoise_stage_compares_cpu_and_gpu() {
             println!("CPU/whole photo vs GPU: {:e}", agree(&a, &b));
         }
         Err(e) => println!("GPU unavailable: {e}"),
+    }
+
+    // Apple's MPSGraph (what a Mac tries first), in f32 and f16
+    #[cfg(target_os = "macos")]
+    for precision in [lightcraft_mpsgraph::Precision::F32, lightcraft_mpsgraph::Precision::F16] {
+        match lightcraft_mpsgraph::runner(cpu.net(), 512, precision) {
+            Ok(mps) => {
+                let name = mps.adapter();
+                let tile_error = relative(&want, &mps.run(&x).unwrap());
+                println!("CPU/check tile vs {name}: {tile_error:e}");
+                tile_time(&name, &mps, &x);
+                let answer = photo_time(&name, &mps, &raw, layout, &Params { parallel: 4, ..p });
+                let a: Vec<_> = done.data.iter().flatten().copied().collect();
+                let b: Vec<_> = answer.data.iter().flatten().copied().collect();
+                println!("CPU/whole photo vs {name}: {:e}", relative(&a, &b));
+                if precision == lightcraft_mpsgraph::Precision::F32 {
+                    assert!(tile_error <= 1e-3, "{name} does not give the CPU answer ({tile_error:e})");
+                }
+            }
+            Err(e) => println!("MPSGraph unavailable: {e}"),
+        }
     }
 }

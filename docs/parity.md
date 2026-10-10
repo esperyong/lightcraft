@@ -268,7 +268,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-EDIT-DETAIL-SHARPEN | Sharpening | P0 | ✅ | `ctl:detail.sharpenAmount`, `ctl:detail.sharpenRadius`, `ctl:detail.sharpenDetail`, `ctl:detail.sharpenMasking` | no Alt-drag mask preview |
 | LR-EDIT-DETAIL-NR | Luminance noise reduction | P0 | ✅ | `ctl:detail.nrLuminance`, `ctl:detail.nrDetail`, `ctl:detail.nrContrast` | |
 | LR-EDIT-DETAIL-CNR | Colour noise reduction | P0 | ✅ | `ctl:detail.nrColor`, `ctl:detail.nrColorDetail`, `ctl:detail.nrColorSmoothness` | |
-| LR-EDIT-DETAIL-DENOISE | AI denoise | P2 | 🟡 | cmd:denoise.toggle, cmd:denoise.models.install, cmd:denoise.queue, ctl:enhance.denoise, `crates/denoise/`, `docs/denoise.md` | non-destructive Bayer RAW, opt-in weights, pure-Rust CPU/GPU (checked on Apple M5 Metal: 24 MP in 4.8 s on the GPU, 19.4 s on the CPU, docs/denoise.md); X-Trans/linear RGB, model policy and Lightroom fidelity remain |
+| LR-EDIT-DETAIL-DENOISE | AI denoise | P2 | 🟡 | cmd:denoise.toggle, cmd:denoise.models.install, cmd:denoise.queue, ctl:enhance.denoise, `crates/denoise/`, `docs/denoise.md` | non-destructive Bayer RAW, opt-in weights, pure-Rust CPU/GPU (checked on Apple M5 Metal: 24 MP in 4.8 s on the GPU, 19.4 s on the CPU, docs/denoise.md), Apple MPSGraph tried first on a Mac (`crates/mpsgraph/`); X-Trans/linear RGB, model policy and Lightroom fidelity remain |
 | LR-EDIT-DETAIL-RAWDETAILS | Improved demosaic toggle | P2 | ⬜ | | |
 | LR-EDIT-DETAIL-SUPERRES | Super resolution | P2 | ⬜ | | |
 | LR-EDIT-DETAIL-AISHARPEN | AI sharpen | OOS | 🚫 | | |

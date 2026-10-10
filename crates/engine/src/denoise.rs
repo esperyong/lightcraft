@@ -260,15 +260,86 @@ fn card_tile_ms(runner: &dyn TileRunner, input: &[f32]) -> f64 {
     best
 }
 
-/// Set the card up for the model at `path`: kernels built, the check tile run on both and compared, both timed.
+/// What runs the model's tiles on the graphics card.
+#[cfg(feature = "denoise")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CardBackend {
+    /// Apple's MetalPerformanceShadersGraph (macOS): Apple's own convolution kernels.
+    #[cfg(target_os = "macos")]
+    Mps(lightcraft_mpsgraph::Precision),
+    /// LightCraft's wgpu compute kernels (`lightcraft_gpu::nn`).
+    Wgpu,
+}
+
+/// The card runners to try, in order: on a Mac MPSGraph first, then the wgpu kernels. `LIGHTCRAFT_DENOISE_GPU=mps` or
+/// `=wgpu` keeps only that one (to compare them); `LIGHTCRAFT_DENOISE_PRECISION=f16` makes MPSGraph compute in half
+/// precision (default f32; the check tile must still agree with the CPU).
+#[cfg(feature = "denoise")]
+fn card_backends() -> Vec<CardBackend> {
+    let only = std::env::var("LIGHTCRAFT_DENOISE_GPU").unwrap_or_default().trim().to_ascii_lowercase();
+    #[cfg(target_os = "macos")]
+    {
+        let precision = std::env::var("LIGHTCRAFT_DENOISE_PRECISION")
+            .ok()
+            .and_then(|p| lightcraft_mpsgraph::Precision::parse(&p.to_ascii_lowercase()))
+            .unwrap_or_default();
+        match only.as_str() {
+            "mps" => vec![CardBackend::Mps(precision)],
+            "wgpu" => vec![CardBackend::Wgpu],
+            _ => vec![CardBackend::Mps(precision), CardBackend::Wgpu],
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = only;
+        vec![CardBackend::Wgpu]
+    }
+}
+
+/// Build `backend`'s runner for `net`: the runner and how it names its device.
+#[cfg(feature = "denoise")]
+fn card_runner(backend: CardBackend, net: &lightcraft_denoise::net::Net, tile: usize) -> Result<(Box<dyn TileRunner + Send>, String), String> {
+    match backend {
+        #[cfg(target_os = "macos")]
+        CardBackend::Mps(precision) => {
+            let r = lightcraft_mpsgraph::runner(net, tile, precision)?;
+            let adapter = r.adapter();
+            Ok((Box::new(r), adapter))
+        }
+        CardBackend::Wgpu => {
+            let r = lightcraft_gpu::nn::runner(net, tile)?;
+            let adapter = r.adapter();
+            Ok((Box::new(r), adapter))
+        }
+    }
+}
+
+/// Set the card up for the model at `path` with the first runner that works ([`card_backends`]); the reasons the
+/// others were passed over are logged.
 #[cfg(feature = "denoise")]
 fn make_gpu(cpu: &lightcraft_denoise::runtime::CpuRunner, path: &Path, tile: usize) -> Result<GpuSide, String> {
+    let mut why = String::new();
+    for backend in card_backends() {
+        match make_gpu_with(backend, cpu, path, tile) {
+            Ok(side) => return Ok(side),
+            Err(e) => {
+                log::info!("denoise: {backend:?} is not used ({e})");
+                why = e;
+            }
+        }
+    }
+    Err(why)
+}
+
+/// Set `backend` up for the model at `path`: kernels built, the check tile run on both and compared, both timed.
+#[cfg(feature = "denoise")]
+fn make_gpu_with(backend: CardBackend, cpu: &lightcraft_denoise::runtime::CpuRunner, path: &Path, tile: usize) -> Result<GpuSide, String> {
     let input = Arc::new(lightcraft_denoise::runtime::check_tile(tile));
     let (on_card, net) = (input.clone(), cpu.net().clone());
     let card = move || -> Result<_, String> {
-        let runner = lightcraft_gpu::nn::runner(&net, tile)?;
-        let got = runner.run(&on_card).map_err(|e| format!("the GPU could not run the check tile: {e}"))?;
-        let card_ms = card_tile_ms(&runner, &on_card);
+        let runner = card_runner(backend, &net, tile)?;
+        let got = runner.0.run(&on_card).map_err(|e| format!("the GPU could not run the check tile: {e}"))?;
+        let card_ms = card_tile_ms(&*runner.0, &on_card);
         Ok((runner, got, card_ms))
     };
     let on_cpu = || {
@@ -282,7 +353,8 @@ fn make_gpu(cpu: &lightcraft_denoise::runtime::CpuRunner, path: &Path, tile: usi
     if got.len() != want.len() || !got.iter().all(|v| v.is_finite()) || worst > GPU_AGREE {
         return Err(format!("its answer on the check tile is not the CPU's (off by {worst:.1e} of the largest value): not used"));
     }
-    Ok(GpuSide { adapter: runner.adapter(), runner: Box::new(runner), card_ms, cpu_ms })
+    let (runner, adapter) = runner;
+    Ok(GpuSide { adapter, runner, card_ms, cpu_ms })
 }
 
 #[cfg(feature = "denoise")]

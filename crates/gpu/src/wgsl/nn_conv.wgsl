@@ -8,6 +8,10 @@
 // workgroup memory. The source can be two tensors whose channels follow each other (a skip connection's join, so it
 // is never made), and a leaky ReLU is applied on the way out. Specialised by the host: BM, BN, BK (BM * BN = 4096).
 //
+// Every thread writes whole vec4s of workgroup memory, never one component of a vec4 another thread also writes: Metal
+// stores a component at a dynamic index as a read-modify-write of the whole vector, so threads filling the lanes of one
+// vec4 side by side overwrote each other's values (wrong outputs on Apple GPUs only, issue #6).
+//
 // Output modes:
 //   0  NHWC at the input's size.
 //   1  a 2x2 stride-2 transposed convolution: the columns are (dy, dx, co) and each lands in the output pixel
@@ -41,12 +45,30 @@ const BM: u32 = {{BM}}u;
 const BN: u32 = {{BN}}u;
 const BK: u32 = {{BK}}u;
 const TX: u32 = BN / 4u;
-const A_ITEMS: u32 = BM * (BK / 4u);
+// each A item: four pixels (consecutive rows of A) by four channels, written as four whole vec4s
+const A_ITEMS: u32 = (BM / 4u) * (BK / 4u);
 const B_ITEMS: u32 = BK * (BN / 4u);
 
 // A[k][m] four pixels to a vec4, B[k][n] four channels to a vec4
 var<workgroup> As: array<vec4<f32>, {{A_VECS}}>;
 var<workgroup> Bs: array<vec4<f32>, {{B_VECS}}>;
+
+// Input pixel `m` (a row of A) shifted by the tap, channels `ci`..`ci + 3`; zero outside the picture.
+fn a_pixel(m: u32, hw: u32, ty_off: i32, tx_off: i32, ci: u32) -> vec4<f32> {
+    if (m >= hw) {
+        return vec4<f32>(0.0);
+    }
+    let y = i32(m / p.w) + ty_off;
+    let x = i32(m % p.w) + tx_off;
+    if (y < 0 || y >= i32(p.h) || x < 0 || x >= i32(p.w)) {
+        return vec4<f32>(0.0);
+    }
+    let pix = u32(y) * p.w + u32(x);
+    if (ci < p.c0) {
+        return src0[pix * (p.c0 / 4u) + ci / 4u];
+    }
+    return src1[pix * (p.c1 / 4u) + (ci - p.c0) / 4u];
+}
 
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) tid: u32) {
@@ -71,29 +93,20 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
         for (var chunk = 0u; chunk < chunks; chunk++) {
             let ci0 = chunk * BK;
             for (var item = tid; item < A_ITEMS; item += 256u) {
-                let ml = item / (BK / 4u);
+                // pixels m0 + 4 mg .. + 3 (one vec4 of As per channel), channels ci0 + 4 q .. + 3
+                let mg = item / (BK / 4u);
                 let q = item % (BK / 4u);
-                let m = m0 + ml;
-                var v = vec4<f32>(0.0);
-                if (m < hw) {
-                    let y = i32(m / p.w) + ty_off;
-                    let x = i32(m % p.w) + tx_off;
-                    if (y >= 0 && y < i32(p.h) && x >= 0 && x < i32(p.w)) {
-                        let pix = u32(y) * p.w + u32(x);
-                        let ci = ci0 + q * 4u;
-                        if (ci < p.c0) {
-                            v = src0[pix * (p.c0 / 4u) + ci / 4u];
-                        } else {
-                            v = src1[pix * (p.c1 / 4u) + (ci - p.c0) / 4u];
-                        }
-                    }
-                }
-                let base = (q * 4u) * (BM / 4u) + ml / 4u;
-                let lane = ml % 4u;
-                As[base][lane] = v.x;
-                As[base + BM / 4u][lane] = v.y;
-                As[base + 2u * (BM / 4u)][lane] = v.z;
-                As[base + 3u * (BM / 4u)][lane] = v.w;
+                let m = m0 + mg * 4u;
+                let ci = ci0 + q * 4u;
+                let a0 = a_pixel(m, hw, ty_off, tx_off, ci);
+                let a1 = a_pixel(m + 1u, hw, ty_off, tx_off, ci);
+                let a2 = a_pixel(m + 2u, hw, ty_off, tx_off, ci);
+                let a3 = a_pixel(m + 3u, hw, ty_off, tx_off, ci);
+                let base = (q * 4u) * (BM / 4u) + mg;
+                As[base] = vec4<f32>(a0.x, a1.x, a2.x, a3.x);
+                As[base + BM / 4u] = vec4<f32>(a0.y, a1.y, a2.y, a3.y);
+                As[base + 2u * (BM / 4u)] = vec4<f32>(a0.z, a1.z, a2.z, a3.z);
+                As[base + 3u * (BM / 4u)] = vec4<f32>(a0.w, a1.w, a2.w, a3.w);
             }
             for (var item = tid; item < B_ITEMS; item += 256u) {
                 let r = item / (BN / 4u);

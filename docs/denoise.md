@@ -88,6 +88,17 @@ from a check tile; this estimate can choose imperfectly on unmeasured hardware.
 Settings offers Automatic, Graphics card and Processor. GPU tests cover supported
 synthetic networks against the scalar executor; a real-model test compares CPU/GPU.
 
+On a Mac the card is first tried through Apple's MetalPerformanceShadersGraph
+(`crates/mpsgraph`): the same checked network becomes one MPSGraph when the card is
+set up (no model conversion), so the convolutions run on Apple's own kernels. It is
+held to the same check tile, time limit and crash marker; when it can't be built or
+its answer is not the CPU's, the wgpu kernels are tried next. The adapter then reads
+like `Apple M5 (MPSGraph, f32)`. `LIGHTCRAFT_DENOISE_GPU=mps` or `=wgpu` keeps one of
+the two (to compare them), and `LIGHTCRAFT_DENOISE_PRECISION=f16` tries MPSGraph in
+half precision first (f32 by default; a model whose numbers overflow f16 falls through to f32). Its Objective-C calls are the reason
+`crates/mpsgraph` is the second crate allowed `unsafe` (see AGENTS.md); its API is
+safe and it checks every shape it hands MPSGraph.
+
 ### Historical performance, measured 2026-10-07
 
 These are the contributor's measurements **before the current upstream integration**,
@@ -124,10 +135,26 @@ The largest CPU/GPU differences were 1.42e-6 (check tile) and 1.21e-6 (whole pho
 gave 82 ms per tile, no faster than one: the card runs one tile at a time, so the whole stage is about 35 × 80 ms.
 The kernels compute in f32. X-Trans files are refused with "only Bayer raw files can be denoised".
 
+### Apple MPSGraph on the same M5, measured 2026-10-10
+
+The same machine, model and photo, all three runners in one session:
+
+| Work | Pure-Rust CPU | wgpu (Metal) | MPSGraph f32 |
+|---|---:|---:|---:|
+| One warm 512-cell tile, one caller | 1008 ms | 80.7 ms | 23.8 ms |
+| Whole photo, model stage | 11.284 s | 2.837 s | 0.894 s |
+| Whole photo, end to end through the engine | — | 3.3 s | 1.8 s |
+
+MPSGraph f32 is about 3.2× the wgpu kernels; its largest CPU difference was 1.7e-6 (check tile) and 1.1e-6 (whole
+photo), and Automatic chose it. In f16 a tile takes 12.5 ms, but RawNIND's answer is at a scale of about 1e6, past
+f16's largest number (65504): its output is not finite, the check tile rejects it and f32 is used instead. (On the
+small synthetic test networks f16 stays within 1.1e-3.)
+
 Fresh checks can be run using an already installed model and CC0 raw samples:
 
 ```text
 LC_DENOISE_MODEL=<model.onnx> cargo test --release -p lightcraft-gpu --features denoise --lib real_model_on_the_gpu_matches_cpu -- --ignored --nocapture
+LC_DENOISE_MODEL=<model.onnx> cargo test --release -p lightcraft-mpsgraph --lib real_model_on_mpsgraph_matches_cpu -- --ignored --nocapture   # macOS
 LC_DENOISE_MODEL=<model.onnx> LC_DENOISE_RAW=<corpus/raw> cargo test --release -p lightcraft-engine --features rawnind-model --test denoise_cpu -- --ignored --nocapture
 LC_DENOISE_MODEL=<model.onnx> LC_DENOISE_RAW=<corpus/raw> cargo test --release -p lightcraft-engine --features rawnind-model --test denoise_real -- --ignored --nocapture
 ```

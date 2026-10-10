@@ -54,6 +54,7 @@ cargo run --release -p lightcraft-cli -- --help   # run (command chains), render
   `LIGHTCRAFT_PROFILE=1` (per-stage timings), `LIGHTCRAFT_LIBRARY` (library folder), `LIGHTCRAFT_NO_PREFS` (don't
   touch user settings), `LIGHTCRAFT_LOG`, `LIGHTCRAFT_DENOISE_MODELS`, `LIGHTCRAFT_CAMERA_PROFILES`,
   `LIGHTCRAFT_EXPORT_THREADS` (photos a batch export renders at once; 1 = one at a time),
+  `LIGHTCRAFT_DENOISE_GPU=auto|mps|wgpu` / `LIGHTCRAFT_DENOISE_PRECISION=f32|f16` (AI denoise card runner on a Mac),
   `LIGHTCRAFT_MEMORY_MB` (memory budget).
 
 ## Never crash (outranks feature work)
@@ -68,7 +69,9 @@ of it. Full standard: `../craftrules/standards/never-crash.md`
   "unsupported" error or is disabled. Sole exception: a provably infallible literal, as `#[allow(clippy::expect_used)]`
   + `.expect("why it can't fail")`.
 - **`unsafe` lives only in `crates/sysmem`** (one FFI call, `malloc_zone_pressure_relief`, that returns freed
-  allocator pages to macOS after raw decodes). Every other production crate root has `#![forbid(unsafe_code)]`. A new
+  allocator pages to macOS after raw decodes) **and `crates/mpsgraph`** (the Objective-C calls that run AI denoise on
+  Apple's MetalPerformanceShadersGraph, macOS only; a safe API, the engine falls back to the wgpu kernels when it fails
+  its check against the CPU). Every other production crate root has `#![forbid(unsafe_code)]`. A new
   unsafe need goes in an isolated, well-tested helper crate like it: `// SAFETY:` on every block, a safe API, a safe
   fallback where possible, and a line here naming it.
 - **Input-derived numbers are hostile:** `get()` instead of `[i]`/`[a..b]` for offsets from files, users, agents or
@@ -159,7 +162,8 @@ Layers (authoritative table: `xtask/src/layers.rs`; a crate may only depend on l
 - **L0** `geom`, `color`, `raster`, `tiff`, `fetch` (GET-only pure-Rust HTTPS for model downloads), `heif`, `sysmem`
 - **L1** `meta` (EXIF/XMP), `raw` (decoders in `src/vendor/`, demosaic), `codecs`, `develop` (settings model + control
   specs), `denoise-core`/`denoise` (own ONNX executor), `faces`, `scenes` (procedural demo photos)
-- **L2** `pipeline` · **L3** `gpu`, `catalog`, `preview`, `merge`, `segment` (SAM 3) · **L4** `engine` · **L5** `ui-egui`, `mcp`
+- **L2** `pipeline` · **L3** `gpu`, `catalog`, `preview`, `merge`, `segment` (SAM 3), `mpsgraph` (denoise on Apple MPSGraph)
+  · **L4** `engine` · **L5** `ui-egui`, `mcp`
 - apps: `lightcraft` (desktop + control server), `lightcraft-cli`, `lightcraft-web` (wasm); `xtask` = tooling.
 
 How the pieces connect:

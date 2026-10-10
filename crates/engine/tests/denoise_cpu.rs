@@ -24,6 +24,13 @@ fn agree(a: &[f32], b: &[f32]) -> f32 {
     assert!(error <= 1e-3, "maximum relative error {error:e}");
     error
 }
+/// Largest difference as a share of `a`'s largest value, without a bound (for f16).
+#[allow(dead_code)]
+fn relative(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    let scale = a.iter().fold(1e-6f32, |m, v| m.max(v.abs()));
+    a.iter().zip(b).fold(0f32, |m, (a, b)| m.max((a - b).abs())) / scale
+}
 fn tile_time(name: &str, r: &dyn TileRunner, x: &[f32]) {
     r.run(x).unwrap();
     let mut times: Vec<_> = (0..5)
@@ -98,5 +105,31 @@ fn denoise_stage_compares_cpu_and_gpu() {
             println!("CPU/whole photo vs GPU: {:e}", agree(&a, &b));
         }
         Err(e) => println!("GPU unavailable: {e}"),
+    }
+
+    // Apple's MPSGraph (what a Mac tries first), in f32 and f16
+    #[cfg(target_os = "macos")]
+    for precision in [lightcraft_mpsgraph::Precision::F32, lightcraft_mpsgraph::Precision::F16] {
+        match lightcraft_mpsgraph::runner(cpu.net(), 512, precision) {
+            Ok(mps) => {
+                let name = mps.adapter();
+                // as the engine checks a card: finite numbers, within 1e-3 of the CPU (f16 overflows on a model whose
+                // answer is at a scale of 1e6, past f16's 65504)
+                let check = mps.run(&x).ok().filter(|out| out.iter().all(|v| v.is_finite()));
+                let tile_error = check.as_ref().map_or(f32::INFINITY, |out| relative(&want, out));
+                println!("CPU/check tile vs {name}: {tile_error:e}");
+                if tile_error.is_nan() || tile_error > 1e-3 {
+                    assert!(precision != lightcraft_mpsgraph::Precision::F32, "{name} does not give the CPU answer ({tile_error:e})");
+                    println!("{name}: its check tile is not the CPU's, so the engine passes it over (no whole-photo run)");
+                    continue;
+                }
+                tile_time(&name, &mps, &x);
+                let answer = photo_time(&name, &mps, &raw, layout, &Params { parallel: 4, ..p });
+                let a: Vec<_> = done.data.iter().flatten().copied().collect();
+                let b: Vec<_> = answer.data.iter().flatten().copied().collect();
+                println!("CPU/whole photo vs {name}: {:e}", relative(&a, &b));
+            }
+            Err(e) => println!("MPSGraph unavailable: {e}"),
+        }
     }
 }

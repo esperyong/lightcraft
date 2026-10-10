@@ -42,10 +42,14 @@ lightcraft-segment = { workspace = true, optional = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 lightcraft-fetch = { workspace = true }
 
+# AI denoise on Apple's MPSGraph (tried before the wgpu kernels on a Mac)
+[target.'cfg(target_os = "macos")'.dependencies]
+lightcraft-mpsgraph = { workspace = true, optional = true }
+
 [features]
 # AI masks with SAM 3 (Object / Describe). Off for the web and CLI builds.
 sam = ["dep:lightcraft-segment"]
-denoise = ["dep:lightcraft-denoise", "lightcraft-denoise/runtime", "lightcraft-gpu/denoise"]
+denoise = ["dep:lightcraft-denoise", "lightcraft-denoise/runtime", "lightcraft-gpu/denoise", "dep:lightcraft-mpsgraph"]
 rawnind-model = ["denoise", "lightcraft-denoise/rawnind-model", "lightcraft-denoise-core/rawnind-model"]
 
 [dev-dependencies]

@@ -3120,6 +3120,7 @@ dependencies = [
  "lightcraft-gpu",
  "lightcraft-merge",
  "lightcraft-meta",
+ "lightcraft-mpsgraph",
  "lightcraft-pipeline",
  "lightcraft-preview",
  "lightcraft-raster",
@@ -3231,6 +3232,18 @@ dependencies = [
  "quick-xml 0.38.4",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lightcraft-mpsgraph"
+version = "0.5.0"
+dependencies = [
+ "lightcraft-denoise",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "objc2-metal-performance-shaders",
+ "objc2-metal-performance-shaders-graph",
 ]
 
 [[package]]
@@ -4045,6 +4058,31 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
+]
+
+[[package]]
+name = "objc2-metal-performance-shaders"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46a10f15ff4e2045f947ffca8a17fc351b155c321de16f04278a008a1f446784"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+]
+
+[[package]]
+name = "objc2-metal-performance-shaders-graph"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3733321d6edbaa799a59b3f2c82b9e83abfa7577eae0274d3c02f9e879eab1aa"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "objc2-metal-performance-shaders",
 ]
 
 [[package]]

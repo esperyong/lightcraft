@@ -1,0 +1,46 @@
+[package]
+name = "lightcraft-mpsgraph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LightCraft mpsgraph (L3): runs denoise networks with Apple's MetalPerformanceShadersGraph on macOS. Allowed `unsafe` for its Objective-C calls, behind a safe API."
+
+# Opts out of the workspace lints only to keep `unsafe_code = "deny"` overridable for the one module that calls
+# Objective-C (`macos`); like crates/sysmem. See AGENTS.md and craftrules standards/never-crash.md ("isolated helper
+# library crate").
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[dependencies]
+lightcraft-denoise = { workspace = true }
+
+# The bindings are pure Rust (no C build step); the frameworks are the system's own, as for wgpu's Metal backend.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSData", "NSDictionary", "NSObject", "NSString", "NSValue"] }
+objc2-metal = { workspace = true, features = ["std", "MTLDevice", "MTLCommandQueue"] }
+objc2-metal-performance-shaders = { workspace = true, features = ["std", "MPSCore", "MPSCoreTypes", "MPSNDArray"] }
+objc2-metal-performance-shaders-graph = { workspace = true, features = [
+    "std",
+    "MPSGraph",
+    "MPSGraphActivationOps",
+    "MPSGraphArithmeticOps",
+    "MPSGraphConvolutionOps",
+    "MPSGraphCore",
+    "MPSGraphDevice",
+    "MPSGraphMemoryOps",
+    "MPSGraphOperation",
+    "MPSGraphPoolingOps",
+    "MPSGraphTensor",
+    "MPSGraphTensorData",
+    "MPSGraphTensorShapeOps",
+    "objc2-metal-performance-shaders",
+] }
+
+[dev-dependencies]
+lightcraft-denoise = { workspace = true, features = ["runtime"] }

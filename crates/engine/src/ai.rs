@@ -3,7 +3,7 @@
 //! the aesthetic sort use it.
 //!
 //! Photos are analyzed on worker threads: the session prepares each photo's picture (a raw's embedded preview while it
-//! is unedited, else its cached thumbnail render — what the grid shows, edits and crop included), a worker renders it
+//! is unedited, else a render as developed, edits and crop included, at [`EDGE`]), a worker renders it
 //! and runs the model, and [`Session::ai_pump`] stores the results (LightCraft's own bookkeeping, not an undo step). In
 //! the app ([`AiState::background`]) `ai.analyze` returns at once and the frames pump; elsewhere (CLI, MCP) it waits,
 //! for at most its `budgetMs`, and what is left keeps going and is collected by the next `ai.*` command.
@@ -23,8 +23,10 @@ use lightcraft_raster::Rgba8;
 use crate::Session;
 use crate::media::{PreviewLoader, RenderJob};
 
-/// Long edge of the picture the model sees (Vision's own models look at less).
-pub const EDGE: usize = 512;
+/// Long edge of the picture the model sees. Not the grid's 512 px thumbnail: there, Vision's aesthetics score of one
+/// high-key photo swung from 17 to 76 (of 100) with 2/255 of JPEG noise, while at 1,024 px it scored as its original
+/// did; labels are more confident at this size too (measured on an M5, macOS 26).
+pub const EDGE: usize = 1024;
 /// Most photos worked on at once.
 const MAX_THREADS: usize = 4;
 /// Photos handed to the workers beyond the ones they are working on, so a worker that finishes starts its next at once.
@@ -282,7 +284,7 @@ impl Session {
 
     fn ai_prepare(&mut self, id: PhotoId, analyzer: Analyzer) -> Option<Prepared> {
         let photo = self.catalog.photo(id)?.clone();
-        let job = self.thumb_job(id, EDGE)?;
+        let job = self.analysis_job(id, EDGE)?;
         // an unedited raw: the camera's own JPEG is what it looks like, at a fraction of the cost of decoding the raw
         #[cfg(not(target_arch = "wasm32"))]
         let preview = if photo.is_edited() { None } else { self.scan_preview_of(&photo) };

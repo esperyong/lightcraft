@@ -977,6 +977,21 @@ impl crate::Session {
 
     /// A render of `id` with `settings` in place of its own, fitting `max_w × max_h` (the loupe's
     /// temporary preview while hovering a preset or profile; nothing is committed or cached).
+    /// A render of `id` for an analysis pass (AI labels and scores): fitted within `edge`, cropped, from a source decoded
+    /// no larger than that needs (or the one already in memory), and kept in no cache: a pass over thousands of photos
+    /// must not push out what the views show.
+    pub(crate) fn analysis_job(&mut self, id: PhotoId, edge: usize) -> Option<RenderJob> {
+        let mut job = self.render_job(id, edge, edge, false, true)?;
+        let needed = source_edge_needed(self.catalog.photo(id)?, &job.settings, true, edge).max(edge);
+        if let SourceRef::File { max_edge, .. } | SourceRef::Demo { max_edge, .. } = &mut job.source {
+            *max_edge = (*max_edge).min(needed);
+        }
+        job.cache = None;
+        job.view_cache = None;
+        job.stages = None;
+        Some(job)
+    }
+
     pub fn preview_job(&mut self, id: PhotoId, max_w: usize, max_h: usize, apply_crop: bool, settings: &DevelopSettings) -> Option<RenderJob> {
         let mut job = self.render_job(id, max_w, max_h, false, apply_crop)?;
         job.settings = Arc::new(settings.clone());

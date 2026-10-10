@@ -278,3 +278,32 @@ fn labels_become_keywords_on_request_in_one_undo_step() {
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(kw(&s, ids[0]).iter().all(|k| !k.starts_with("AI")));
 }
+
+/// The model sees each photo at `ai::EDGE` px (the grid's 512 px thumbnails gave Vision unstable aesthetics scores), and a
+/// pass leaves the caches the views use as they were.
+#[test]
+fn photos_are_analyzed_at_1024_px_without_filling_the_view_caches() {
+    let mut s = Session::with_demo();
+    let sizes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = sizes.clone();
+    s.ai.analyzer = Some(Arc::new(move |img: &lightcraft_raster::Rgba8| {
+        seen.lock().unwrap().push((img.width, img.height));
+        Ok(AiAnalysis { labels: vec![], aesthetic: Some(50.0), utility: false, model: "test".into() })
+    }));
+    let ids = all(&s);
+    let before = s.memory_report();
+    s.execute("ai.analyze", &json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()})).unwrap();
+    let sizes = sizes.lock().unwrap().clone();
+    assert_eq!(sizes.len(), ids.len());
+    assert!(sizes.iter().any(|(w, h)| (*w).max(*h) > 512), "larger than a grid thumbnail: {sizes:?}");
+    for (id, (w, h)) in ids.iter().zip(&sizes) {
+        let p = s.catalog.photo(*id).unwrap();
+        // fitted within 1,024 px, as large as the photo allows
+        let expected = (p.width.max(p.height) as usize).min(crate::ai::EDGE);
+        assert!((*w).max(*h).abs_diff(expected) <= 1, "{id:?}: {w} × {h}, expected a long edge of {expected}");
+    }
+    let after = s.memory_report();
+    assert_eq!(after.rendered.bytes, before.rendered.bytes, "no render kept");
+    assert_eq!(after.preview_sources.bytes, before.preview_sources.bytes, "no source kept");
+    assert_eq!(after.thumb_sources.bytes, before.thumb_sources.bytes);
+}

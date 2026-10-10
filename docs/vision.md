@@ -38,9 +38,10 @@ estimate stays and the result (or a toast) says why. Sky has no Vision request a
 
 Photo → **Analyze with Apple Vision** (or `ai.analyze`) analyzes the selected photos, else every photo in view;
 photos analyzed before are skipped unless `force: true`. It runs on worker threads (half the cores, at most four);
-the app shows "Analyzing photos: n of m" with Cancel and a toast at the end. Each photo is seen as the grid shows it
-(its cached thumbnail render, edits and crop included; an unedited raw's embedded preview, which is much faster than
-decoding the raw), upright and at 512 px.
+the app shows "Analyzing photos: n of m" with Cancel and a toast at the end. Each photo is seen as developed, edits
+and crop included (an unedited raw: its embedded preview, much faster than decoding the raw), upright and at
+**1,024 px**, a render kept in no cache. Not the grid's 512 px thumbnail: there one photo's aesthetics score swung from
+17 to 76 with 2/255 of JPEG noise, while at 1,024 px it scored as its original did, and labels are more confident.
 
 What is stored per photo (`Photo.ai`; catalog format 4):
 
@@ -125,7 +126,7 @@ Apple M5 (10 cores), macOS 26.6, release build:
 |---|---|
 | Labels + aesthetics, one image (512–1,024 px) | 6–8 ms (screenshots 20 ms); the first call also loads the models |
 | Subject mask, one image | 9–17 ms |
-| `ai.analyze`, 57 photos (40 JPEG, 12 raws, 5 PNG), 4 workers | 1.73 s: **30 ms per photo**, renders included |
+| `ai.analyze`, 57 photos (40 JPEG, 12 raws, 5 PNG), 4 workers, at 512 px | 1.73 s: **30 ms per photo**, renders included |
 
 - Rankings matched a photographer's eye at both ends (sharp, clean close-ups on top; dark, cluttered night crowds at the
   bottom); `ai:sky` / `sky`, `utility:yes` and `ai.keywords` (105 keywords on 32 photos) worked as documented.
@@ -133,7 +134,9 @@ Apple M5 (10 cores), macOS 26.6, release build:
   the difference is resampling); fine feathers kept. In the app the estimate (52 % of the frame) was replaced by
   Vision's subject (37 %) and one undo brought the estimate back.
 - Vision's limits seen: a high-key photo of a white peacock filling the frame had no subject; one photo had no label at
-  the high-precision bar but a 93 aesthetics score.
+  the high-precision bar but a 93 aesthetics score; the same peacock scored 17 or 76 depending on 2/255 of JPEG noise
+  at 512 px (73.6 and 73.9 at 1,024 px, from the render and from the original). Read a score as a ranking hint, not a
+  measurement.
 
 ## Testing on a Mac
 

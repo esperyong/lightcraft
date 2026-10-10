@@ -126,8 +126,11 @@ Apple M5 (10 cores), macOS 26.6, release build:
 |---|---|
 | Labels + aesthetics, one image (512–1,024 px) | 6–8 ms (screenshots 20 ms); the first call also loads the models |
 | Subject mask, one image | 9–17 ms |
-| `ai.analyze`, 57 photos (40 JPEG, 12 raws, 5 PNG), 4 workers, at 512 px | 1.73 s: **30 ms per photo**, renders included |
+| `ai.analyze`, 57 photos (40 JPEG, 12 raws, 5 PNG), 4 workers | 2.19 s: **38 ms per photo**, renders included (30 ms at 512 px) |
 
+- At 1,024 px each score matched Vision's score of the original decoded at 1,024 px within 0.1 (7 photos compared);
+  at 512 px they were 0–2.6 lower, the white peacock 57 lower, and the library's low end sat lower (worst three
+  16.6 / 32.4 / 42.9, against 44.1 / 50 / 50 at 1,024 px).
 - Rankings matched a photographer's eye at both ends (sharp, clean close-ups on top; dark, cluttered night crowds at the
   bottom); `ai:sky` / `sky`, `utility:yes` and `ai.keywords` (105 keywords on 32 photos) worked as documented.
 - Subject / Background masks: no fallback notes; exports at 800 and 3,000 px put the edge in the same place (IoU 0.94,

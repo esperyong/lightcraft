@@ -50,8 +50,10 @@ What is stored per photo (`Photo.ai`; catalog format 4):
 - **aesthetic**: Vision's overall score mapped from −1..1 to **0..100** (composition, exposure, focus, subject…).
 - **utility**: a utility image (screenshot, receipt, document…) rather than a memorable photo.
 
-The results are LightCraft's own bookkeeping: not an undo step, not written to XMP sidecars, not keywords (they don't
-touch the keyword list). Re-run with `force` after big edits if the score should follow them.
+The results are LightCraft's own bookkeeping: not an undo step, not written to XMP sidecars, and they don't touch the
+keyword list. To turn labels into real keywords (written to XMP as `dc:subject`, shown in the Keywords panel, read by
+other apps), use Photo → **Add AI Labels as Keywords** (`ai.keywords`): the confident labels go under an `AI`
+parent (`AI|dog`), one undo step. Re-run `ai.analyze` with `force` after big edits if the score should follow them.
 
 ### Finding photos by them
 
@@ -67,6 +69,7 @@ touch the keyword list). Re-run with `force` after big edits if the score should
 | Command | Params → result |
 |---|---|
 | `ai.analyze` | `{ids?, force?, wait?, budgetMs?}` → `{queued, skipped, done, total, pending, failed: [{id, error}], photos?: [{id, labels, aesthetic, utility}]}`. Waits by default outside the app (at most `budgetMs`; what is left keeps going and the next `ai.*` call collects it). |
+| `ai.keywords` | `{ids?, minConfidence? (0.5), max? (5 per photo), parent? ("AI"; "" = top level), replace?}` → `{changed, added}`: labels become keywords, one undo step |
 | `ai.status` | `{}` → progress plus `available`, `features: {labels, aesthetics, subject}` and the photos finished since the last report |
 | `ai.cancel` | `{}` → `{cancelled}`: drops the photos still waiting (those being analyzed finish) |
 

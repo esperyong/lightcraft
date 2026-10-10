@@ -1742,5 +1742,6 @@
   "What It Shows (AI labels)": "画面内容（AI 标签）",
   "Utility Image (AI: screenshot, receipt…)": "实用图片（AI：截图、收据等）",
   "AI Analysis Status": "AI 分析状态",
-  "Stop AI Analysis": "停止 AI 分析"
+  "Stop AI Analysis": "停止 AI 分析",
+  "Add AI Labels as Keywords": "将 AI 标签添加为关键词"
 }

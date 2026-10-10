@@ -7,7 +7,8 @@
   Vision answers. The subject is stored with the mask, so previews, exports and other platforms show the same.
 - Photo ▸ Analyze with Apple Vision labels what each photo shows and gives it an aesthetics score (0–100, macOS 15+),
   in the background with progress and Cancel. Search `dog` or `ai:beach`, `aesthetic:>70`, `utility:yes`; smart
-  albums and View ▸ Sort ▸ Aesthetic Score use them too; agents use `ai.analyze` (see [vision.md](vision.md)).
+  albums and View ▸ Sort ▸ Aesthetic Score use them too; Photo ▸ Add AI Labels as Keywords turns labels into keywords
+  (`AI|dog`, written to XMP); agents use `ai.analyze` / `ai.keywords` (see [vision.md](vision.md)).
 - The catalog format is now version 4 (`Photo.ai`, `Op::SetAi`, a segmentation on Subject / Background masks). Once
   this version has opened a library, older versions refuse it, as with every format change.
 

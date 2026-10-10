@@ -252,3 +252,29 @@ fn in_the_app_the_subject_arrives_after_the_mask() {
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(component_shape(&mut s, mask, 0), lightcraft_develop::MaskShape::Subject { seg: None });
 }
+
+#[test]
+fn labels_become_keywords_on_request_in_one_undo_step() {
+    let (mut s, _) = session();
+    let ids = all(&s);
+    let list = json!(ids.iter().map(|i| i.0).collect::<Vec<_>>());
+    s.execute("ai.analyze", &json!({"ids": list})).unwrap();
+    // the analysis itself touches no keywords
+    assert!(ids.iter().all(|id| s.catalog.photo(*id).unwrap().meta.keywords.iter().all(|k| !k.starts_with("AI"))));
+    let r = s.execute("ai.keywords", &json!({"ids": list})).unwrap();
+    assert_eq!(r["changed"], json!(ids.len()), "{r}");
+    let kw = |s: &Session, id: PhotoId| s.catalog.photo(id).unwrap().meta.keywords.clone();
+    let first = kw(&s, ids[0]);
+    assert!(first.iter().any(|k| k == "AI|photo") && first.iter().any(|k| k == "AI|bright" || k == "AI|dark"), "{first:?}");
+    let q = |s: &Session, f: Filter| s.catalog.query(&f, &Sort::default()).len();
+    assert_eq!(q(&s, Filter { keyword: Some("AI".into()), ..Default::default() }), ids.len());
+    // again: nothing new; a higher bar with replace keeps only the confident label
+    assert_eq!(s.execute("ai.keywords", &json!({"ids": list})).unwrap()["changed"], json!(0));
+    s.execute("ai.keywords", &json!({"ids": list, "minConfidence": 0.8, "replace": true})).unwrap();
+    assert!(!kw(&s, ids[0]).iter().any(|k| k == "AI|photo"));
+    // one undo step per command
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(kw(&s, ids[0]).iter().any(|k| k == "AI|photo"));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(kw(&s, ids[0]).iter().all(|k| !k.starts_with("AI")));
+}

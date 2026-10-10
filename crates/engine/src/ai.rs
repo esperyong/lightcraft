@@ -194,9 +194,11 @@ impl Session {
             self.ai.progress = AiProgress::default();
         }
         let mut added = 0;
+        // (a set: a library of tens of thousands of photos is queued at once)
+        let mut taken: std::collections::HashSet<PhotoId> = self.ai.queue.iter().chain(&self.ai.in_flight).copied().collect();
         for &id in ids {
             let fresh = self.catalog.photo(id).is_some_and(|p| p.ai.is_none());
-            if analyzable(self, id) && (force || fresh) && !self.ai.queue.contains(&id) && !self.ai.in_flight.contains(&id) {
+            if analyzable(self, id) && (force || fresh) && taken.insert(id) {
                 self.ai.queue.push_back(id);
                 added += 1;
             }

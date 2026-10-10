@@ -2,10 +2,10 @@
 
 use std::time::{Duration, Instant};
 
-use lightcraft_catalog::{Photo, PhotoId};
+use lightcraft_catalog::{Op, Photo, PhotoId};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bool_or, cmd};
+use super::{CommandSpec, bool_or, cmd, f64_or, str_param};
 use crate::{Result, Session};
 
 /// In the Photo menu where the model exists (a Mac); elsewhere the commands stay, disabled, for scripts to ask about.
@@ -49,9 +49,50 @@ fn progress(s: &Session) -> Value {
     })
 }
 
+/// The photos an `ai.*` command is about: `ids` / `id`, else the selection when several are selected, else the view.
+fn targets(s: &mut Session, p: &Value) -> Vec<PhotoId> {
+    if p.get("ids").is_some() || p.get("id").is_some() || s.selection.ids.len() > 1 { s.targets(p) } else { s.visible_cloned() }
+}
+
+/// Labels become keywords under `parent` (`AI|dog`), so they travel in XMP (`dc:subject`) to other apps and show in
+/// the Keywords panel. One undo step.
+fn keywords(s: &mut Session, p: &Value) -> Result<Value> {
+    let min = f64_or(p, "minConfidence", 0.5).clamp(0.0, 1.0) as f32;
+    let most = p.get("max").and_then(Value::as_u64).unwrap_or(5).min(lightcraft_catalog::AiAnalysis::MAX_LABELS as u64) as usize;
+    let parent = str_param(p, "parent").unwrap_or("AI").trim().trim_matches('|').trim().to_string();
+    let replace = bool_or(p, "replace", false) && !parent.is_empty();
+    let under = |k: &str| lightcraft_catalog::keywords::is_under(k, &parent);
+    let mut ops = Vec::new();
+    let mut added = 0;
+    for id in targets(s, p) {
+        let Some(photo) = s.catalog.photo(id) else { continue };
+        let Some(ai) = photo.ai.as_ref() else { continue };
+        let mut meta = photo.meta.clone();
+        let before = meta.keywords.clone();
+        if replace {
+            meta.keywords.retain(|k| !under(k));
+        }
+        for l in ai.labels.iter().filter(|l| l.confidence >= min).take(most) {
+            let word = l.name.replace('_', " ");
+            let k = if parent.is_empty() { word } else { format!("{parent}|{word}") };
+            if !meta.keywords.iter().any(|x| x.eq_ignore_ascii_case(&k)) {
+                meta.keywords.push(k);
+                added += 1;
+            }
+        }
+        if meta.keywords != before {
+            ops.push(Op::SetMeta { id, meta: Box::new(meta) });
+        }
+    }
+    let changed = ops.len();
+    if changed > 0 {
+        s.commit("AI Keywords", Op::Batch { ops })?;
+    }
+    Ok(json!({"changed": changed, "added": added}))
+}
+
 fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids: Vec<PhotoId> =
-        if p.get("ids").is_some() || p.get("id").is_some() || s.selection.ids.len() > 1 { s.targets(p) } else { s.visible_cloned() };
+    let ids = targets(s, p);
     let queued = s.ai_enqueue(&ids, bool_or(p, "force", false));
     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(!s.ai.background);
     if wait {
@@ -79,6 +120,16 @@ pub fn specs() -> Vec<CommandSpec> {
             params: "{ids?, force?: bool (also photos analyzed before), wait?: bool, budgetMs?} — what each photo shows (labels, e.g. dog, beach, sports_car) and how good it looks (aesthetic 0..100, macOS 15+), from Apple's Vision framework on the Mac; the selected photos (else all in view; photos analyzed before are skipped unless `force`). Stored in the catalog: search `ai:dog`, `aesthetic:>70`, `utility:yes`, `analyzed:no`, smart-album fields aesthetic / aiLabels / utility, `library.sort {key: aesthetic}`. Waits (CLI, MCP; at most `budgetMs`, the rest keeps going and the next ai.* command collects it) or, in the app, returns at once → {queued, skipped, done, total, pending, failed: [{id, error}], photos?: [{id, labels: [{name, confidence}], aesthetic, utility}]}",
             enabled: available,
             run: analyze,
+            journal: true,
+        },
+        CommandSpec {
+            id: "ai.keywords",
+            label: "Add AI Labels as Keywords",
+            menu: MENU,
+            shortcut: None,
+            params: "{ids?, minConfidence?: 0..1 (0.5), max?: labels per photo (5), parent?: keyword the labels go under (\"AI\"; \"\" = top level), replace?: bool (first remove the keywords under `parent`)} — the labels `ai.analyze` found become keywords (`AI|dog`, `_` → space), so they are written to XMP and show in the Keywords panel; the selected photos (else all in view); one undo step → {changed, added}",
+            enabled: super::always,
+            run: keywords,
             journal: true,
         },
         cmd!(

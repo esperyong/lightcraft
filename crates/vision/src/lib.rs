@@ -275,9 +275,18 @@ mod tests {
         use std::time::Instant;
         let Some(path) = std::env::var_os("LC_VISION_IMAGE") else { return };
         let bytes = std::fs::read(&path).unwrap();
-        let t = lightcraft_codecs::decode_thumbnail(&bytes, 1024).unwrap().image;
+        let thumb = lightcraft_codecs::decode_thumbnail(&bytes, 1024).unwrap();
+        // upright, as LightCraft shows the photo and gives it to Vision (the decoded pixels are as stored)
+        let orientation = lightcraft_geom::Orientation::from_exif(thumb.orientation);
+        let t = thumb.image.oriented(orientation);
         let img = Image { width: t.width, height: t.height, pixels: &t.data };
-        println!("{:?}: {} × {}; Vision here: {:?}", path, t.width, t.height, features());
+        println!("{:?}: {} × {} ({orientation:?}); Vision here: {:?}", path, t.width, t.height, features());
+        if orientation != lightcraft_geom::Orientation::Normal {
+            // Vision's scores depend on the way up: what the photo would get on its side
+            let stored = &thumb.image;
+            let a = analyze(Image { width: stored.width, height: stored.height, pixels: &stored.data }).unwrap();
+            println!("  as stored (not upright): aesthetics {:?}", a.aesthetics);
+        }
         for round in 0..3 {
             let s = Instant::now();
             let a = analyze(img).unwrap();

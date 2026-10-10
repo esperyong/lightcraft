@@ -3376,6 +3376,7 @@ name = "lightcraft-vision"
 version = "0.5.0"
 dependencies = [
  "lightcraft-codecs",
+ "lightcraft-geom",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-core-graphics",

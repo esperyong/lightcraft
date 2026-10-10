@@ -16,8 +16,8 @@ before (the photo's own mattes, else a heuristic) and the `ai.*` commands are di
 (`ai.status` → `available: false`). Everything Vision produced is plain data in the library, so a library analyzed
 on a Mac searches, sorts and renders the same on any platform.
 
-**Status:** implemented and tested with stand-in models on Linux; the Vision calls themselves are type-checked for
-`aarch64-apple-darwin` but not yet measured on Mac hardware.
+**Status:** tested with stand-in models on Linux and checked on an Apple M5 (macOS 26.6, 2026-10-10) with 57 real
+photos (JPEG, NEF, ARW, PNG, screenshots); numbers in [Measured on a Mac](#measured-on-a-mac).
 
 ## Select Subject / Background
 
@@ -40,7 +40,7 @@ Photo → **Analyze with Apple Vision** (or `ai.analyze`) analyzes the selected 
 photos analyzed before are skipped unless `force: true`. It runs on worker threads (half the cores, at most four);
 the app shows "Analyzing photos: n of m" with Cancel and a toast at the end. Each photo is seen as the grid shows it
 (its cached thumbnail render, edits and crop included; an unedited raw's embedded preview, which is much faster than
-decoding the raw), at 512 px.
+decoding the raw), upright and at 512 px.
 
 What is stored per photo (`Photo.ai`; catalog format 4):
 
@@ -48,7 +48,8 @@ What is stored per photo (`Photo.ai`; catalog format 4):
   confidence, most confident first, at most 16 from Vision. Only labels at Vision's high-precision operating point are
   kept (about 9 in 10 right; recall ≥ 1 % at 90 % precision), so an unusual photo can have none.
 - **aesthetic**: Vision's overall score mapped from −1..1 to **0..100** (composition, exposure, focus, subject…).
-- **utility**: a utility image (screenshot, receipt, document…) rather than a memorable photo.
+- **utility**: a utility image (screenshot, receipt, document…) rather than a memorable photo. Vision gives utility
+  images a score of 0, so they all land on **50**: rank photos with `utility:no`.
 
 The results are LightCraft's own bookkeeping: not an undo step, not written to XMP sidecars, and they don't touch the
 keyword list. To turn labels into real keywords (written to XMP as `dc:subject`, shown in the Keywords panel, read by
@@ -116,10 +117,29 @@ closed eyes), and its image feature prints for Find Similar Photos.
   (`AiState::analyzer`), which is how the tests run anywhere.
 - `crates/engine/src/subject.rs`: Select Subject / Background, the matte-to-grid conversion and the background path.
 
+## Measured on a Mac
+
+Apple M5 (10 cores), macOS 26.6, release build:
+
+| What | Time |
+|---|---|
+| Labels + aesthetics, one image (512–1,024 px) | 6–8 ms (screenshots 20 ms); the first call also loads the models |
+| Subject mask, one image | 9–17 ms |
+| `ai.analyze`, 57 photos (40 JPEG, 12 raws, 5 PNG), 4 workers | 1.73 s: **30 ms per photo**, renders included |
+
+- Rankings matched a photographer's eye at both ends (sharp, clean close-ups on top; dark, cluttered night crowds at the
+  bottom); `ai:sky` / `sky`, `utility:yes` and `ai.keywords` (105 keywords on 32 photos) worked as documented.
+- Subject / Background masks: no fallback notes; exports at 800 and 3,000 px put the edge in the same place (IoU 0.94,
+  the difference is resampling); fine feathers kept. In the app the estimate (52 % of the frame) was replaced by
+  Vision's subject (37 %) and one undo brought the estimate back.
+- Vision's limits seen: a high-key photo of a white peacock filling the frame had no subject; one photo had no label at
+  the high-precision bar but a 93 aesthetics score.
+
 ## Testing on a Mac
 
 ```sh
 cargo test -p lightcraft-vision -- --nocapture                         # Vision on a synthetic scene
+# a real photo, upright as LightCraft gives it to Vision; a rotated one also prints the score of its stored pixels
 LC_VISION_IMAGE=~/Pictures/some.jpg cargo test --release -p lightcraft-vision --lib real_photo -- --ignored --nocapture
 cargo run --release -p lightcraft-cli -- run --import ~/Pictures/folder ai.analyze budgetMs=600000
 ```

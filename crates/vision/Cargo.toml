@@ -40,3 +40,4 @@ objc2-vision = { workspace = true, features = [
 
 [dev-dependencies]
 lightcraft-codecs = { workspace = true }
+lightcraft-geom = { workspace = true }

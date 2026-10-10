@@ -501,3 +501,81 @@ fn undated_photos_group_under_unknown_date_and_sort_together() {
     let filter_year = Filter { date: Some("2026".into()), ..Default::default() };
     assert_eq!(c.query(&filter_year, &Sort { key: SortKey::CaptureDate, ascending: false, ..Default::default() }), vec![p_dated2, p_dated1]);
 }
+
+fn ai(labels: &[(&str, f32)], aesthetic: Option<f32>, utility: bool) -> Option<Arc<AiAnalysis>> {
+    let labels = labels.iter().map(|(n, c)| AiLabel { name: n.to_string(), confidence: *c }).collect();
+    Some(Arc::new(AiAnalysis { labels, aesthetic, utility, model: "test".into() }))
+}
+
+#[test]
+fn ai_analysis_is_searchable_sortable_and_undoable() {
+    let mut c = Catalog::new();
+    let dog = photo(&mut c, "IMG_1.jpg", "2026-05-01T10:00:00");
+    let car = photo(&mut c, "IMG_2.jpg", "2026-05-02T10:00:00");
+    let shot = photo(&mut c, "IMG_3.jpg", "2026-05-03T10:00:00");
+    let none = photo(&mut c, "IMG_4.jpg", "2026-05-04T10:00:00");
+    let inv = c.apply(Op::SetAi { id: dog, ai: ai(&[("dog", 0.9), ("grass", 0.6)], Some(82.0), false) }).unwrap();
+    assert_eq!(inv, Op::SetAi { id: dog, ai: None }, "the inverse forgets it");
+    c.apply(Op::SetAi { id: car, ai: ai(&[("sports_car", 0.8)], Some(55.5), false) }).unwrap();
+    c.apply(Op::SetAi { id: shot, ai: ai(&[("document", 0.95)], Some(10.0), true) }).unwrap();
+    let q = |text: &str| {
+        c.query(&Filter { text: text.into(), ..Default::default() }, &Sort { key: SortKey::FileName, ascending: true, ..Default::default() })
+    };
+    assert_eq!(q("ai:dog"), vec![dog]);
+    assert_eq!(q("ai:Sports_Car"), vec![car]);
+    assert_eq!(q("dog"), vec![dog], "a bare word finds a label");
+    assert_eq!(q("car"), Vec::<PhotoId>::new(), "…but only a whole label");
+    assert_eq!(q("aesthetic:>50"), vec![dog, car]);
+    assert_eq!(q("aesthetic:<50"), vec![shot]);
+    assert_eq!(q("aesthetic:>50 ai:grass"), vec![dog]);
+    assert_eq!(q("utility:yes"), vec![shot]);
+    assert_eq!(q("utility:no"), vec![dog, car]);
+    assert_eq!(q("analyzed:no"), vec![none]);
+    assert_eq!(q("analyzed:yes").len(), 3);
+    // best first; a photo without a score is last
+    let best = c.query(&Filter::default(), &Sort { key: SortKey::Aesthetic, ascending: false, ..Default::default() });
+    assert_eq!(best, vec![dog, car, shot, none]);
+    // smart-album rules
+    let rules = |v: serde_json::Value| -> Vec<PhotoId> {
+        let rs: RuleSet = serde_json::from_value(v).unwrap();
+        let f = Filter { rule_set: Some(rs), ..Default::default() };
+        c.query(&f, &Sort { key: SortKey::FileName, ascending: true, ..Default::default() })
+    };
+    assert_eq!(rules(serde_json::json!({"rules": [{"field": "aesthetic", "op": "gte", "value": 55.5}]})), vec![dog, car]);
+    assert_eq!(rules(serde_json::json!({"rules": [{"field": "aiLabels", "op": "is", "value": "sports car"}]})), vec![car]);
+    assert_eq!(rules(serde_json::json!({"rules": [{"field": "aiLabels", "op": "isEmpty"}]})), vec![none]);
+    assert_eq!(rules(serde_json::json!({"rules": [{"field": "utility", "op": "is", "value": true}]})), vec![shot]);
+    // undo restores the earlier analysis
+    let before = c.photo(dog).unwrap().ai.clone();
+    let inv = c.apply(Op::SetAi { id: dog, ai: None }).unwrap();
+    assert!(c.photo(dog).unwrap().ai.is_none());
+    c.apply(inv).unwrap();
+    assert_eq!(c.photo(dog).unwrap().ai, before);
+}
+
+#[test]
+fn ai_analysis_is_sanitized_and_round_trips() {
+    let mut c = Catalog::new();
+    let id = photo(&mut c, "a.jpg", "2026-05-01T10:00:00");
+    let mut many: Vec<(String, f32)> = (0..100).map(|i| (format!("label{i}"), i as f32 / 100.0)).collect();
+    many.push((" ".into(), 0.99));
+    many.push(("nan".into(), f32::NAN));
+    let labels: Vec<(&str, f32)> = many.iter().map(|(n, c)| (n.as_str(), *c)).collect();
+    c.apply(Op::SetAi { id, ai: ai(&labels, Some(f32::INFINITY), false) }).unwrap();
+    let a = c.photo(id).unwrap().ai.clone().unwrap();
+    assert_eq!(a.labels.len(), AiAnalysis::MAX_LABELS);
+    assert_eq!(a.labels[0].name, "label99", "most confident first");
+    assert!(a.labels.iter().all(|l| l.confidence.is_finite() && !l.name.trim().is_empty()));
+    assert_eq!(a.aesthetic, None, "a score that isn't a number is dropped");
+    c.apply(Op::SetAi { id, ai: ai(&[("dog", 7.0)], Some(140.0), true) }).unwrap();
+    let a = c.photo(id).unwrap().ai.clone().unwrap();
+    assert_eq!((a.labels[0].confidence, a.aesthetic), (1.0, Some(100.0)));
+    // serde: a photo without analysis writes nothing new, and an analysis survives a snapshot
+    let plain = Photo::new(PhotoId(9), Source::Demo { scene: 1 }, "p.jpg", "JPEG", 10, 10, "2026-01-01T00:00:00");
+    assert!(!serde_json::to_string(&plain).unwrap().contains("\"ai\""));
+    let p = c.photo(id).unwrap();
+    let back: Photo = serde_json::from_str(&serde_json::to_string(p).unwrap()).unwrap();
+    assert_eq!(back.ai, p.ai);
+    let old: AiAnalysis = serde_json::from_str(r#"{"model": "x"}"#).unwrap();
+    assert!(old.labels.is_empty() && old.aesthetic.is_none() && !old.utility);
+}

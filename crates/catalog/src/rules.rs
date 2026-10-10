@@ -84,6 +84,9 @@ pub const FIELDS: &[(&str, &str, Kind)] = &[
     ("album", "Album", Kind::Number),
     ("sharpness", "Focus (assisted culling)", Kind::Number),
     ("bestOfGroup", "Best of Similar Shots", Kind::Bool),
+    ("aesthetic", "Aesthetic Score (AI, 0–100)", Kind::Number),
+    ("aiLabels", "What It Shows (AI labels)", Kind::Keywords),
+    ("utility", "Utility Image (AI: screenshot, receipt…)", Kind::Bool),
 ];
 
 /// The operators for a field kind: (id, label).
@@ -340,6 +343,18 @@ impl Rule {
             "megapixels" => num_op(op, Some(p.width as f64 * p.height as f64 / 1e6), value),
             "sharpness" => num_op(op, p.analysis.map(|a| a.sharpness as f64), value),
             "bestOfGroup" => p.analysis.is_some_and(|a| a.best || a.group.is_none()) == value.as_bool().unwrap_or(true),
+            "aesthetic" => num_op(op, p.ai.as_ref().and_then(|a| a.aesthetic).map(f64::from), value),
+            "aiLabels" => {
+                let labels: Vec<String> = p.ai.as_ref().map(|a| a.labels.iter().map(|l| l.name.replace('_', " ")).collect()).unwrap_or_default();
+                let want = want.replace('_', " ");
+                match op {
+                    "isEmpty" => labels.is_empty(),
+                    "isNotEmpty" => !labels.is_empty(),
+                    "notContains" => !labels.iter().any(|l| text_op("contains", l, &want)),
+                    _ => labels.iter().any(|l| text_op(op, l, &want)),
+                }
+            }
+            "utility" => p.ai.as_ref().is_some_and(|a| a.utility) == value.as_bool().unwrap_or(true),
             "album" => {
                 let id = number(value).map(|v| crate::AlbumId(v as u64));
                 id.is_some_and(|a| cat.album(a).is_some_and(|al| !al.is_smart()) && cat.album_contains(a, p)) == (op == "is")

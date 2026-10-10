@@ -114,6 +114,7 @@ impl Photo {
             && self.versions.is_empty()
             && *self.develop == self.import_defaults()
             && self.analysis.is_none()
+            && self.ai.is_none()
             && m.title.is_empty()
             && m.caption.is_empty()
             && m.alt_text.is_empty()
@@ -281,6 +282,7 @@ impl Op {
             | Op::PushHistory { id, .. }
             | Op::SetCaptured { id, .. }
             | Op::SetAnalysis { id, .. }
+            | Op::SetAi { id, .. }
             | Op::SetFile { id, .. }
             | Op::Relink { id, .. }
             | Op::SetContent { id, .. } => out(*id),

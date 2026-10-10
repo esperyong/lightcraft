@@ -470,6 +470,7 @@ fn expanded(app: &LightcraftApp, name: &str) -> Option<Vec<MenuNode>> {
                 ("File Name", FileName, "fileName"),
                 ("Rating", Rating, "rating"),
                 ("File Size", FileSize, "fileSize"),
+                ("Aesthetic Score", Aesthetic, "aesthetic"),
                 ("Random", Random, "random"),
             ]
             .into_iter()

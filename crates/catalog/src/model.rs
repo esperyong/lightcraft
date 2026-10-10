@@ -271,6 +271,9 @@ pub struct Photo {
     /// Assisted culling scores (`None` until analysed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub analysis: Option<Analysis>,
+    /// What an image-understanding model saw in the photo: labels and an aesthetic score (`None` until analysed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai: Option<Arc<AiAnalysis>>,
     /// A raw file whose sensor data can't be decoded yet (an unsupported raw variant): why (the
     /// raw decoder's reason, e.g. "Nikon Huffman-compressed NEF …"). The photo is shown and
     /// edited from the camera's embedded JPEG preview — a rendered image with the camera's
@@ -294,6 +297,58 @@ pub struct Analysis {
     pub group: Option<u32>,
     /// The best photo of its group.
     pub best: bool,
+}
+
+/// What an image-understanding model (Apple's Vision on a Mac) saw in a photo.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiAnalysis {
+    /// What the photo shows, most confident first: the model's labels (English identifiers such as `dog`, `beach`,
+    /// `sports_car`) with how sure it is.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<AiLabel>,
+    /// How good the photo looks: 0 (poor) .. 100 (excellent). `None` when the model doesn't score photos.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aesthetic: Option<f32>,
+    /// A utility image (a screenshot, receipt, document…) rather than a memorable photo.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub utility: bool,
+    /// The model that looked, e.g. `Apple Vision`.
+    pub model: String,
+}
+
+/// One thing a photo shows.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AiLabel {
+    pub name: String,
+    /// 0..1.
+    pub confidence: f32,
+}
+
+impl AiAnalysis {
+    /// Most labels kept per photo.
+    pub const MAX_LABELS: usize = 32;
+
+    /// Whether a label is `name` (case-insensitive; a space and `_` are the same, so `sports car` is `sports_car`).
+    pub fn has_label(&self, name: &str) -> bool {
+        let want = name.trim().replace(' ', "_");
+        !want.is_empty() && self.labels.iter().any(|l| l.name.eq_ignore_ascii_case(&want))
+    }
+
+    /// Only numbers a catalog can store and compare (finite, in range) and a bounded label list, whatever a model or a
+    /// command gave.
+    pub fn sanitized(mut self) -> AiAnalysis {
+        self.labels.retain(|l| !l.name.trim().is_empty() && l.confidence.is_finite());
+        for l in &mut self.labels {
+            l.name = l.name.trim().chars().take(64).collect();
+            l.confidence = l.confidence.clamp(0.0, 1.0);
+        }
+        self.labels.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
+        self.labels.truncate(Self::MAX_LABELS);
+        self.aesthetic = self.aesthetic.filter(|a| a.is_finite()).map(|a| a.clamp(0.0, 100.0));
+        self.model = self.model.trim().chars().take(64).collect();
+        self
+    }
 }
 
 impl Photo {
@@ -327,6 +382,7 @@ impl Photo {
             copy_name: None,
             import_look: None,
             analysis: None,
+            ai: None,
             preview_only: None,
             local_baseline: None,
         }

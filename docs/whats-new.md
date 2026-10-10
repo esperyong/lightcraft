@@ -2,6 +2,16 @@
 
 ## October 2026
 
+### Apple Vision on the Mac (subject masks, labels, aesthetics)
+- Masking ▸ Subject / Background use Apple Vision's subject on macOS 14+: the mask appears at once and refines when
+  Vision answers. The subject is stored with the mask, so previews, exports and other platforms show the same.
+- Photo ▸ Analyze with Apple Vision labels what each photo shows and gives it an aesthetics score (0–100, macOS 15+),
+  in the background with progress and Cancel. Search `dog` or `ai:beach`, `aesthetic:>70`, `utility:yes`; smart
+  albums and View ▸ Sort ▸ Aesthetic Score use them too; Photo ▸ Add AI Labels as Keywords turns labels into keywords
+  (`AI|dog`, written to XMP); agents use `ai.analyze` / `ai.keywords` (see [vision.md](vision.md)).
+- The catalog format is now version 4 (`Photo.ai`, `Op::SetAi`, a segmentation on Subject / Background masks). Once
+  this version has opened a library, older versions refuse it, as with every format change.
+
 ### Masking
 - Drag anywhere inside the selected radial gradient's ellipse to move it, including rotated
   ellipses and radial components in compound masks. Edge and rotation handles keep their existing

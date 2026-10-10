@@ -28,6 +28,9 @@ pub fn photo_summary(p: &Photo) -> Value {
         "copyName": p.copy_name,
         // an undecodable raw variant, shown and edited from its embedded JPEG: why
         "previewOnly": p.preview_only,
+        // what an image-understanding model saw (`ai.analyze`): the score and the most confident labels
+        "aesthetic": p.ai.as_ref().and_then(|a| a.aesthetic).map(|v| (v * 10.0).round() / 10.0),
+        "aiLabels": p.ai.as_ref().map(|a| a.labels.iter().take(5).map(|l| l.name.as_str()).collect::<Vec<_>>()),
     })
 }
 

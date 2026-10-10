@@ -201,6 +201,10 @@ lightcraft-cli run --connect ui.set view=detail ui.screenshot path=/tmp/ui.png
 lightcraft-cli run --demo --script steps.jsonl --keep-going
 ```
 
+On a Mac, `ai.analyze` scores and labels photos with Apple's Vision framework, so an agent can pick the best and
+finish them — analyze, `catalog.query` sorted by `aesthetic`, `preset.apply`, `export` — see
+[vision.md](vision.md#agents-score-pick-edit-export).
+
 ## Other CLI subcommands
 
 ```sh

@@ -46,6 +46,7 @@
 //! | 1 | up to v0.2.0 | |
 //! | 2 | after v0.2.0 | `Op::SetBrowsed`, `Catalog.browsed`, `Photo.local_baseline` |
 //! | 3 | albums by hand | `Op::SetAlbumOrder`, `Album.order` |
+//! | 4 | Apple Vision analysis | `Op::SetAi`, `Photo.ai`; a `seg` on Subject / Background mask shapes |
 //!
 //! Rules:
 //! - **Bump [`VERSION`]** (and add a row above) in the change that adds an [`Op`] variant or a
@@ -70,7 +71,7 @@ pub const LOG: &str = "catalog.log";
 const FORMAT: &str = "lightcraft-catalog";
 /// The catalog format this build writes (and the newest it reads). See the module docs →
 /// *Format versions*; bump it whenever an [`Op`] variant or a serialized field is added.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// When [`Journal::wants_snapshot`] says it's time to compact the log.
 #[derive(Clone, Copy, Debug)]

@@ -25,6 +25,8 @@ lightcraft-denoise-core = { workspace = true }
 lightcraft-denoise = { workspace = true, optional = true }
 lightcraft-meta = { workspace = true }
 lightcraft-faces = { workspace = true }
+# Apple's Vision framework (labels, aesthetics, subject masks); a stub that says so off macOS
+lightcraft-vision = { workspace = true }
 miniz_oxide = { workspace = true }
 lightcraft-merge = { workspace = true }
 rayon = { workspace = true }

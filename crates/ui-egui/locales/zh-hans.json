@@ -1734,5 +1734,14 @@
   "Pending photo action cancelled": "Pending photo action cancelled",
   "Pending photo action cancelled because its library or photo changed": "Pending photo action cancelled because its library or photo changed",
   "ONNX model": "ONNX model",
-  "commercial use subject to GPL conditions": "commercial use subject to GPL conditions"
+  "commercial use subject to GPL conditions": "commercial use subject to GPL conditions",
+  "Analyze with Apple Vision": "用 Apple Vision 分析",
+  "Analyzing": "正在分析",
+  "Aesthetic Score": "美学评分",
+  "Aesthetic Score (AI, 0–100)": "美学评分（AI，0–100）",
+  "What It Shows (AI labels)": "画面内容（AI 标签）",
+  "Utility Image (AI: screenshot, receipt…)": "实用图片（AI：截图、收据等）",
+  "AI Analysis Status": "AI 分析状态",
+  "Stop AI Analysis": "停止 AI 分析",
+  "Add AI Labels as Keywords": "将 AI 标签添加为关键词"
 }

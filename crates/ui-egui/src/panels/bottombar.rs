@@ -237,6 +237,7 @@ fn sort_menu(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         ("File Name", FileName, "fileName"),
         ("Rating", Rating, "rating"),
         ("File Size", FileSize, "fileSize"),
+        ("Aesthetic Score", Aesthetic, "aesthetic"),
         ("Random", Random, "random"),
     ] {
         if ui.selectable_label(cur.key == key, crate::i18n::tr(label)).clicked() {

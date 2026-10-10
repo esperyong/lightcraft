@@ -34,9 +34,11 @@ of it. Full standard: `../craftrules/standards/never-crash.md`
   "unsupported" error or is disabled. Sole exception: a provably infallible literal, as `#[allow(clippy::expect_used)]`
   + `.expect("why it can't fail")`.
 - **`unsafe` lives only in `crates/sysmem`** (one FFI call, `malloc_zone_pressure_relief`, that returns freed
-  allocator pages to macOS after raw decodes) **and `crates/mpsgraph`** (the Objective-C calls that run AI denoise on
+  allocator pages to macOS after raw decodes), **`crates/mpsgraph`** (the Objective-C calls that run AI denoise on
   Apple's MetalPerformanceShadersGraph, macOS only; a safe API, the engine falls back to the wgpu kernels when it fails
-  its check against the CPU). Every other production crate root has `#![forbid(unsafe_code)]`. A new
+  its check against the CPU) **and `crates/vision`** (the Objective-C calls into Apple's Vision framework for labels,
+  aesthetics scores and subject masks, macOS only; a safe API that checks images before and results after, the
+  engine falls back to the heuristic masks elsewhere). Every other production crate root has `#![forbid(unsafe_code)]`. A new
   unsafe need goes in an isolated, well-tested helper crate like it: `// SAFETY:` on every block, a safe API, a safe
   fallback where possible, and a line here naming it.
 - **Input-derived numbers are hostile:** `get()` instead of `[i]`/`[a..b]` for offsets from files, users, agents or

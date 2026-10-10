@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod ai_task;
 pub mod control;
 pub mod credits;
 pub mod export_task;
@@ -246,6 +247,8 @@ pub struct LightcraftApp {
     pub lightroom_last: Option<Value>,
     /// A background export in progress.
     pub export: Option<export_task::ExportTask>,
+    /// Background AI analysis (Photo → Analyze with Apple Vision): its progress panel.
+    pub ai_task: ai_task::AiTask,
     /// Background file-system work of other commands (Find Missing Photos, auto import…).
     pub tasks: tasks::Tasks,
     /// The files of the last finished background export (`ui.inspect` → `export.last`).
@@ -268,6 +271,8 @@ impl LightcraftApp {
     pub fn new(mut session: Session, services: Services) -> Self {
         // AI mask requests run on the model's worker; frames apply their results (never wait)
         session.segmenter.background = true;
+        // AI analysis too: `ai.analyze` returns at once and the frames collect (ai_task)
+        session.ai.background = true;
         Self {
             session,
             ui: UiState::default(),
@@ -314,6 +319,7 @@ impl LightcraftApp {
             lightroom: None,
             lightroom_last: None,
             export: None,
+            ai_task: Default::default(),
             tasks: Default::default(),
             last_export_result: None,
             hover_preview: None,
@@ -492,7 +498,8 @@ impl LightcraftApp {
             self.ai_error(ctx, e, None);
         }
         let seg = &self.session.segmenter;
-        if seg.busy() || seg.pending_clicks().is_some() {
+        // (Select Subject with Apple Vision answers through the same poll)
+        if seg.busy() || seg.pending_clicks().is_some() || self.session.ai.subject.busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
         let download = seg.download_status();
@@ -953,6 +960,7 @@ impl LightcraftApp {
         import::scan_progress(self, &ctx);
         lightroom_import::progress(self, &ctx);
         export_task::poll(self, &ctx);
+        ai_task::poll(self, &ctx);
         pick::poll(self, &ctx);
         panels::grid::drag_feedback(self, &ctx);
         panels::left::album_drag_feedback(self, &ctx);

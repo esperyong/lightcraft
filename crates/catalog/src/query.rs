@@ -18,7 +18,8 @@ pub enum RatingOp {
 #[serde(default, rename_all = "camelCase")]
 pub struct Filter {
     /// Free-text search: every token must match filename, title, caption, keywords, camera, lens,
-    /// location or format. Tokens like `rating:3`, `flag:pick`, `iso:>800`, `camera:x2` are fielded.
+    /// location, format or (a whole label) what a model saw. Tokens like `rating:3`, `flag:pick`, `iso:>800`,
+    /// `camera:x2`, `ai:dog`, `aesthetic:>70`, `utility:yes`, `analyzed:no` are fielded.
     pub text: String,
     pub rating: u8,
     pub rating_op: RatingOp,
@@ -76,6 +77,8 @@ pub enum SortKey {
     FileName,
     Rating,
     FileSize,
+    /// The aesthetic score `ai.analyze` gave (photos without one come before the lowest).
+    Aesthetic,
     /// A shuffle fixed by [`Sort::seed`]: the same seed always gives the same order, and photos
     /// added or edited later never reshuffle the others. Pick a new seed to reshuffle.
     Random,
@@ -144,11 +147,19 @@ fn token_matches(p: &Photo, tok: &str) -> bool {
             "date" => p.captured.as_deref().is_some_and(|c| c.starts_with(val)),
             "copy" | "virtual" => (val == "true" || val == "yes") == p.copy_of.is_some(),
             "name" | "file" => p.file_name.to_lowercase().contains(val),
+            // what an image-understanding model saw (`ai.analyze`)
+            "ai" => p.ai.as_ref().is_some_and(|a| a.has_label(val)),
+            "aesthetic" => p.ai.as_ref().and_then(|a| a.aesthetic).is_some_and(|a| cmp(a as f64, val)),
+            "utility" => p.ai.as_ref().is_some_and(|a| (val == "true" || val == "yes") == a.utility),
+            "analyzed" => (val == "true" || val == "yes") == p.ai.is_some(),
             _ => false,
         };
     }
     let hay = [&p.file_name, &p.meta.title, &p.meta.caption, &p.meta.camera, &p.meta.lens, &p.meta.location, &p.format];
-    hay.iter().any(|h| h.to_lowercase().contains(&t)) || p.meta.keywords.iter().any(|k| k.to_lowercase().contains(&t))
+    hay.iter().any(|h| h.to_lowercase().contains(&t))
+        || p.meta.keywords.iter().any(|k| k.to_lowercase().contains(&t))
+        // a word that is one of the model's labels (whole labels only: `car` doesn't find `cardigan`)
+        || p.ai.as_ref().is_some_and(|a| a.has_label(&t))
 }
 
 /// Whether `p` has a named face region called `name` (case-insensitive).
@@ -356,6 +367,10 @@ impl Catalog {
                 SortKey::FileName => a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()),
                 SortKey::Rating => a.rating.cmp(&b.rating),
                 SortKey::FileSize => a.file_size.cmp(&b.file_size),
+                SortKey::Aesthetic => {
+                    let score = |p: &Photo| p.ai.as_ref().and_then(|a| a.aesthetic).unwrap_or(-1.0);
+                    score(a).total_cmp(&score(b))
+                }
                 SortKey::Random => shuffle_rank(sort.seed, a.id).cmp(&shuffle_rank(sort.seed, b.id)),
             }
             .then(a.id.cmp(&b.id));

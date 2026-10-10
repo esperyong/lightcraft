@@ -176,6 +176,11 @@ pub enum Op {
         id: PhotoId,
         analysis: Option<crate::Analysis>,
     },
+    /// What an image-understanding model saw in a photo (`None` forgets it).
+    SetAi {
+        id: PhotoId,
+        ai: Option<Arc<crate::AiAnalysis>>,
+    },
     /// Rename a photo: its file name and the source it points to. Applying the op never touches
     /// the disk — the engine moves the file before it commits (and on undo/redo).
     SetFile {
@@ -569,6 +574,11 @@ impl Catalog {
             Op::SetAnalysis { id, analysis } => {
                 let p = self.photo_mut(id)?;
                 Op::SetAnalysis { id, analysis: std::mem::replace(&mut p.analysis, analysis) }
+            }
+            Op::SetAi { id, ai } => {
+                let ai = ai.map(|a| Arc::new(Arc::unwrap_or_clone(a).sanitized()));
+                let p = self.photo_mut(id)?;
+                Op::SetAi { id, ai: std::mem::replace(&mut p.ai, ai) }
             }
             Op::SetCaptured { id, captured } => {
                 if let Some(c) = &captured

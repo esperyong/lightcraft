@@ -23,8 +23,8 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
             invert: bool_or(p, "invert", false),
         },
         "sky" => MaskShape::Sky,
-        "subject" => MaskShape::Subject,
-        "background" => MaskShape::Background,
+        "subject" => MaskShape::Subject { seg: seg_param(p) },
+        "background" => MaskShape::Background { seg: seg_param(p) },
         "luminanceRange" => MaskShape::LuminanceRange {
             lo: f64_or(p, "lo", 0.6),
             hi: f64_or(p, "hi", 1.0),
@@ -72,6 +72,10 @@ enum Later {
     Clicks(Vec<Point>, Vec<Point>),
     /// Background mode: the Describe selection is computed first; the mask is added when found.
     Text(String),
+    /// Background mode: Apple Vision looks for the subject of a Subject / Background shape added with the estimate.
+    Subject,
+    /// Vision could not give the subject: the shape keeps the estimate, and the result says why.
+    Note(String),
 }
 
 /// Compute the segmentation of a new AI shape (Object with clicks, Prompt) — or, in background
@@ -109,6 +113,20 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
             let found = s.segment_text(id, text).map_err(ai_err)?;
             *seg = Some(found.ok_or_else(|| ai_err(format!("nothing matching “{text}” was found in this photo")))?);
         }
+        // Apple Vision's subject, where the system has it (else the renderer estimates it)
+        MaskShape::Subject { seg: None } | MaskShape::Background { seg: None } if s.ai.subject.finder.is_some() => {
+            if background {
+                return Ok(Later::Subject);
+            }
+            let invert = matches!(shape, MaskShape::Background { .. });
+            let found = s.subject_now(id);
+            if let Some(note) = crate::subject::fallback_note(&found) {
+                return Ok(Later::Note(note));
+            }
+            if let (Ok(Some(matte)), MaskShape::Subject { seg } | MaskShape::Background { seg }) = (found, shape) {
+                *seg = crate::subject::seg_from_matte(&matte, crate::subject::SEG_SIDE, invert);
+            }
+        }
         _ => {}
     }
     Ok(Later::Nothing)
@@ -116,10 +134,19 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
 
 /// Queue what a new AI component (component `comp` of mask `mask`) still needs.
 fn queue_later(s: &mut Session, later: Later, mask: u32, comp: usize, mut out: Value) -> Result<Value> {
-    if let Later::Clicks(hint, exclude) = later {
-        let id = s.active().ok_or_else(|| ai_err("no active photo"))?;
-        s.segment_clicks_later(id, mask, comp, hint, exclude).map_err(ai_err)?;
-        out["pending"] = json!(true);
+    match later {
+        Later::Clicks(hint, exclude) => {
+            let id = s.active().ok_or_else(|| ai_err("no active photo"))?;
+            s.segment_clicks_later(id, mask, comp, hint, exclude).map_err(ai_err)?;
+            out["pending"] = json!(true);
+        }
+        Later::Subject => {
+            let id = s.active().ok_or_else(|| ai_err("no active photo"))?;
+            // (when it can't start, the shape simply keeps the estimate)
+            out["pending"] = json!(s.subject_later(id, mask, comp));
+        }
+        Later::Note(note) => out["note"] = json!(note),
+        Later::Nothing | Later::Text(_) => {}
     }
     Ok(out)
 }
@@ -158,7 +185,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create New Mask",
             [],
             None,
-            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; object/prompt: seg? a stored segmentation, no model needed), name?} — AI kinds need the SAM 3 model; in the app a prompt returns {pending} and the mask appears when found",
+            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; object/prompt/subject/background: seg? a stored segmentation, no model needed), name?} — object and prompt need the SAM 3 model; in the app a prompt returns {pending} and the mask appears when found. subject/background use Apple Vision's subject on a Mac (macOS 14+; in the app {pending: true} and the mask refines when it answers; {note} when Vision found none), else LightCraft's estimate",
             has_active,
             |s, p| {
                 let kind = str_param(p, "kind").unwrap_or("radial").to_string();

@@ -70,7 +70,7 @@ impl Mattes {
         };
         match shape {
             MaskShape::Sky => self.of(&[Sky]),
-            MaskShape::Subject => person(),
+            MaskShape::Subject { .. } => person(),
             MaskShape::People { parts, .. } => {
                 let wanted: Vec<MatteKind> = parts
                     .iter()
@@ -175,11 +175,17 @@ fn for_each_pos(frame: &Frame, w: usize, h: usize, out: &mut Plane, f: impl Fn(P
 /// The alpha plane of one component shape. AI shapes use the source's matching `mattes`, if any.
 #[allow(clippy::too_many_arguments)]
 pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &Rgb32f, log_l: &Plane, ev: f32, mattes: Option<&Mattes>) -> Plane {
+    let mut out = Plane::new(w, h);
+    // a segmentation stored with the shape when it was made (Apple Vision's subject) is what the user saw then: it
+    // wins over the photo's mattes and the heuristic, and renders the same on every platform
+    if let MaskShape::Subject { seg: Some(seg) } | MaskShape::Background { seg: Some(seg) } = shape {
+        sample_seg(Some(seg), &[], 1.0, frame, w, h, &mut out);
+        return out;
+    }
     let fitting = mattes.map(|m| m.for_shape(shape)).unwrap_or_default();
     if !fitting.is_empty() {
         return matte_alpha(&fitting, frame, w, h);
     }
-    let mut out = Plane::new(w, h);
     let to_long = |p: Point| frame.norm_to_long(p);
     // `img`/`log_l` are before exposure: range masks select on the exposed values.
     let gain = ev.exp2();
@@ -256,7 +262,7 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
         // not computed yet (no clicks, or a build without the model): nothing selected
         MaskShape::Object { hint, .. } if hint.is_empty() => {}
         MaskShape::Prompt { .. } => {}
-        MaskShape::Subject | MaskShape::Object { .. } | MaskShape::People { .. } => {
+        MaskShape::Subject { .. } | MaskShape::Object { .. } | MaskShape::People { .. } => {
             // Saliency heuristic: centre-weighted local contrast (replaced by the segmenter in M12).
             let m = frame.out_to_norm(w, h);
             let blur = lightcraft_raster::blur::gaussian(log_l, 0.03 * frame_px(frame, w));
@@ -269,8 +275,8 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
             }
             smooth_plane(&mut out, 0.015 * frame_px(frame, w));
         }
-        MaskShape::Background => {
-            let mut s = shape_alpha(&MaskShape::Subject, frame, w, h, img, log_l, ev, mattes);
+        MaskShape::Background { .. } => {
+            let mut s = shape_alpha(&MaskShape::Subject { seg: None }, frame, w, h, img, log_l, ev, mattes);
             s.data.iter_mut().for_each(|v| *v = 1.0 - *v);
             out = s;
         }
@@ -605,6 +611,9 @@ mod tests {
         for shape in [
             MaskShape::Object { hint: vec![Point::new(0.25, 0.5)], exclude: vec![], seg: Some(seg.clone()), detail: vec![], edge: 0.0 },
             MaskShape::Prompt { text: "left".into(), seg: Some(seg.clone()), detail: vec![], edge: 0.0 },
+            // Apple Vision's subject (Background stores its own inverse the same way)
+            MaskShape::Subject { seg: Some(seg.clone()) },
+            MaskShape::Background { seg: Some(seg.clone()) },
         ] {
             for (w, h) in [(40, 20), (400, 200)] {
                 let a = shape_alpha(&shape, &frame(w, h), w, h, &Rgb32f::new(w, h), &Plane::new(w, h), 0.0, None);
@@ -858,13 +867,35 @@ mod tests {
         mattes.push(MatteKind::Hair, right);
         let f = frame(w, h);
         let eval = |shape: &MaskShape| shape_alpha(shape, &f, w, h, &img, &l, 0.0, Some(&mattes));
-        let subject = eval(&MaskShape::Subject);
+        let subject = eval(&MaskShape::Subject { seg: None });
         assert!(subject.get(10, 50) > 0.99 && subject.get(190, 50) > 0.99 && subject.get(100, 50) < 0.01);
-        let background = eval(&MaskShape::Background);
+        let background = eval(&MaskShape::Background { seg: None });
         assert!(background.get(100, 50) > 0.99 && background.get(10, 50) < 0.01);
         let hair = eval(&MaskShape::People { person: 0, parts: vec!["Hair".into()] });
         assert!(hair.get(190, 50) > 0.99 && hair.get(10, 50) < 0.01);
         let lips = MaskShape::People { person: 0, parts: vec!["Lips".into()] };
         assert_eq!(eval(&lips), shape_alpha(&lips, &f, w, h, &img, &l, 0.0, None));
+        // a segmentation stored with the shape (Apple Vision's subject) wins over the photo's mattes: what the user saw
+        // when they made the mask
+        let side = 8;
+        let right_half: Vec<f32> = (0..side * side).map(|i| if i % side >= side / 2 { 12.0 } else { -12.0 }).collect();
+        let stored = eval(&MaskShape::Subject { seg: Some(SegMask::from_logits(side, &right_half)) });
+        assert!(stored.get(190, 50) > 0.99 && stored.get(10, 50) < 0.01);
+    }
+
+    /// Settings saved before Subject / Background could carry a segmentation read and write exactly as before (the
+    /// develop hash, and with it every cached render, stays the same).
+    #[test]
+    fn subject_and_background_without_a_segmentation_serialize_as_before() {
+        for (json, shape) in
+            [(r#"{"kind":"subject"}"#, MaskShape::Subject { seg: None }), (r#"{"kind":"background"}"#, MaskShape::Background { seg: None })]
+        {
+            let read: MaskShape = serde_json::from_str(json).unwrap();
+            assert_eq!(read, shape);
+            assert_eq!(serde_json::to_string(&shape).unwrap(), json);
+        }
+        let with = MaskShape::Subject { seg: Some(SegMask::from_logits(2, &[1.0, -1.0, 1.0, -1.0])) };
+        let back: MaskShape = serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
+        assert_eq!(back, with);
     }
 }

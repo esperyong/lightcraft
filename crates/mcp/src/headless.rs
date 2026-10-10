@@ -10,12 +10,10 @@ use serde_json::{Value, json};
 
 use crate::backend::{Backend, ProgressHook};
 
-/// File extensions recognised as photos when expanding folders.
-pub const PHOTO_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "tif", "tiff", "webp", "dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "rwl", "raw", "pef", "srw", "psd", "jxl",
-    "gif", "bmp", "avif", // containers LightCraft cannot decode but imports as preview only (their embedded JPEG)
-    "iiq", "crw", "mrw", "x3f", "kdc", "mos", "erf", "3fr", "fff",
-];
+/// File extensions recognised as photos when expanding folders: the ones the app imports
+/// ([`lightcraft_engine::import::EXTENSIONS`]). A copy of that list had fallen behind it (no `nrw`,
+/// no `heic`), so the CLI and MCP skipped files in folders the app imported.
+pub const PHOTO_EXTENSIONS: &[&str] = lightcraft_engine::import::EXTENSIONS;
 
 /// Headless backend: a [`Session`] with filesystem hooks.
 pub struct Headless {

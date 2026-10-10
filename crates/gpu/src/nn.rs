@@ -945,7 +945,8 @@ mod tests {
     }
 
     /// The real model on the GPU against the pure-Rust CPU runner, with timings (the numbers in docs/denoise.md come from here):
-    /// `LC_DENOISE_MODEL=<model_bayer.onnx> cargo test --release -p lightcraft-gpu --lib real_model -- --ignored --nocapture`
+    /// `LC_DENOISE_MODEL=<model_bayer.onnx> cargo test --release -p lightcraft-gpu --features denoise --lib real_model -- --ignored --nocapture`
+    /// (without `--features denoise` this module is not built and the command runs no test at all)
     #[test]
     #[ignore = "needs the real model: see the doc comment"]
     fn real_model_on_the_gpu_matches_cpu() {

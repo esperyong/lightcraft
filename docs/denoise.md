@@ -106,10 +106,28 @@ the check tile, below the required 1e-3 tolerance. Reference comparisons were ma
 on the older contributor branch; that reference runtime is intentionally excluded
 from the current workspace. These numbers are not a fresh benchmark of this rebase.
 
+### Apple M5 (Metal), measured 2026-10-10
+
+Apple M5 (10 cores, 32 GB, macOS 26.6.2), release build, the same model SHA-256 and the same 24.34 MP photo (35
+tiles), after the fix for wrong convolution outputs on Metal (four threads wrote the lanes of one workgroup `vec4`,
+which Metal compiles as a read-modify-write of the whole vector). The model-stage rows exclude source decode, model
+loading and GPU setup like the table above; the end-to-end row is `denoise_real` (the background queue: read, decode,
+model, cache write).
+
+| Work | Pure-Rust CPU | GPU (Metal) |
+|---|---:|---:|
+| One warm 512-cell tile, one caller | 1056 ms | 79.4 ms |
+| Whole photo, model stage, 10 CPU / 4 GPU feeding workers | 11.295 s | 2.849 s |
+| Whole photo, end to end through the engine | 19.4 s | 4.8 s (Automatic: 4.6 s, chose the GPU) |
+
+The largest CPU/GPU differences were 1.42e-6 (check tile) and 1.21e-6 (whole photo). Two threads feeding the GPU
+gave 82 ms per tile, no faster than one: the card runs one tile at a time, so the whole stage is about 35 × 80 ms.
+The kernels compute in f32. X-Trans files are refused with "only Bayer raw files can be denoised".
+
 Fresh checks can be run using an already installed model and CC0 raw samples:
 
 ```text
-LC_DENOISE_MODEL=<model.onnx> cargo test --release -p lightcraft-gpu --lib real_model_on_the_gpu_matches_cpu -- --ignored --nocapture
+LC_DENOISE_MODEL=<model.onnx> cargo test --release -p lightcraft-gpu --features denoise --lib real_model_on_the_gpu_matches_cpu -- --ignored --nocapture
 LC_DENOISE_MODEL=<model.onnx> LC_DENOISE_RAW=<corpus/raw> cargo test --release -p lightcraft-engine --features rawnind-model --test denoise_cpu -- --ignored --nocapture
 LC_DENOISE_MODEL=<model.onnx> LC_DENOISE_RAW=<corpus/raw> cargo test --release -p lightcraft-engine --features rawnind-model --test denoise_real -- --ignored --nocapture
 ```
@@ -127,5 +145,5 @@ for WASM. Settings and models remain opt-in; nothing is downloaded on launch.
 
 This implementation supports **Bayer RAW only**. X-Trans, Foveon, demosaiced DNG and
 non-RAW images remain unsupported by this model contract. No measured quality parity
-with Lightroom is claimed. Apple/Metal and wider hardware verification, model policy,
+with Lightroom is claimed. Hardware beyond the two machines measured above, model policy,
 a linear-RGB contract and a side-by-side fidelity suite remain future work.

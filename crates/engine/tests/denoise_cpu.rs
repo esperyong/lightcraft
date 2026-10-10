@@ -1,6 +1,7 @@
 //! Opt-in same-machine denoise model-stage benchmark on one public Bayer raw.
 //! LC_DENOISE_MODEL=<onnx> LC_DENOISE_RAW=<CC0 corpus/raw> cargo test --release
-//! -p lightcraft-engine --features denoise --test denoise_cpu -- --ignored --nocapture
+//! -p lightcraft-engine --features rawnind-model --test denoise_cpu -- --ignored --nocapture
+//! (`rawnind-model`, not just `denoise`: the test takes the pinned RawNIND manifest from `known`.)
 //! LC_DENOISE_ONLY selects a file (default arw-sony-a7m3-compressed.arw).
 //! The whole model stage includes packing, scale/clip protection, blending and normalization;
 //! file decode, model loading and GPU setup are outside the timer. It uses the application's tile pool convention.
@@ -63,7 +64,7 @@ fn denoise_stage_compares_cpu_and_gpu() {
     let cfa = raw.cfa.as_ref().unwrap();
     assert!(cfa.is_bayer());
     let layout = Layout::from_cell([cfa.color_at(0, 0), cfa.color_at(1, 0), cfa.color_at(0, 1), cfa.color_at(1, 1)]).unwrap();
-    let m = lightcraft_denoise::known::find("rawnind-bayer").unwrap().manifest;
+    let m = lightcraft_denoise::known::find("rawnind-bayer").expect("no pinned RawNIND manifest: run with --features rawnind-model").manifest;
     let cpu = CpuRunner::load(Path::new(&model), &m).unwrap();
     let threads = std::env::var("LC_DENOISE_PARALLEL")
         .ok()

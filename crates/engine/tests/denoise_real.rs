@@ -4,8 +4,11 @@
 //!
 //! ```text
 //! LC_DENOISE_MODEL=<model_bayer.onnx> LC_DENOISE_RAW=<folder with raw files> \
-//!   cargo test --release -p lightcraft-engine --features denoise --test denoise_real -- --ignored --nocapture
+//!   cargo test --release -p lightcraft-engine --features rawnind-model --test denoise_real -- --ignored --nocapture
 //! ```
+//!
+//! `rawnind-model`, not just `denoise`: installing the bare `.onnx` works because LightCraft knows its SHA-256 from the
+//! pinned manifest, which that feature includes.
 //!
 //! `LC_DENOISE_RAW` is a folder of CC0 raw files (`cargo xtask corpus --download` → `corpus/raw`); every file in it is
 //! tried. Optional: `LC_DENOISE_ONLY` (a file name to try alone), `LC_DENOISE_RUN_ON=cpu|gpu|auto` (where the model runs; `cpu` to compare with the card).
@@ -64,7 +67,9 @@ fn the_real_model_denoises_real_raws_through_the_engine() {
     s.open_library(dir.join("library"), false).unwrap();
     s.set_denoise_models_dir(Some(dir.join("models")));
     let t = Instant::now();
-    let r = s.execute("denoise.models.install", &json!({"path": model.to_string_lossy(), "acknowledged": true})).unwrap();
+    let r = s
+        .execute("denoise.models.install", &json!({"path": model.to_string_lossy(), "acknowledged": true}))
+        .unwrap_or_else(|e| panic!("{e} (run with --features rawnind-model so that LightCraft knows the bare .onnx)"));
     println!("installed {} in {:.1} s: self-test {}", r["installed"]["id"], t.elapsed().as_secs_f64(), r["installed"]["accepted"]["selfTest"]);
     assert_eq!(r["installed"]["id"], "rawnind-bayer");
     if let Ok(run_on) = std::env::var("LC_DENOISE_RUN_ON") {

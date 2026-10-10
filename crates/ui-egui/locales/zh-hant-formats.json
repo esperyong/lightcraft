@@ -206,5 +206,8 @@
   "In line for AI Denoise ({ahead} ahead)…": "In line for AI Denoise ({ahead} ahead)…",
   "Running on {}.": "Running on {}.",
   "{file} · {size}": "{file} · {size}",
-  "•  {assumption}": "•  {assumption}"
+  "•  {assumption}": "•  {assumption}",
+  "Analyzed {} photos": "已分析 {} 張照片",
+  "Analyzed {} photos ({} could not be analyzed)": "已分析 {} 張照片（{} 張無法分析）",
+  "Analyzing photos: {done} of {total}": "正在分析照片：{done}／{total}"
 }

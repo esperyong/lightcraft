@@ -206,5 +206,8 @@
   "In line for AI Denoise ({ahead} ahead)…": "In line for AI Denoise ({ahead} ahead)…",
   "Running on {}.": "Running on {}.",
   "{file} · {size}": "{file} · {size}",
-  "•  {assumption}": "•  {assumption}"
+  "•  {assumption}": "•  {assumption}",
+  "Analyzed {} photos": "{} fotos analizadas",
+  "Analyzed {} photos ({} could not be analyzed)": "{} fotos analizadas ({} no se pudieron analizar)",
+  "Analyzing photos: {done} of {total}": "Analizando fotos: {done} de {total}"
 }

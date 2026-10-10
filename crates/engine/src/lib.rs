@@ -14,6 +14,7 @@
 #[cfg(not(feature = "denoise"))]
 extern crate lightcraft_denoise_core as lightcraft_denoise;
 
+pub mod ai;
 pub mod availability;
 mod camera_preview;
 pub mod camera_profiles;
@@ -173,6 +174,8 @@ pub struct Session {
     pub(crate) skip_auto_write: bool,
     /// AI denoise: the model in use, the photos that have their picture and the work in progress.
     pub(crate) denoise: denoise::State,
+    /// AI analysis (`ai.*`): the model, the queue and the work in progress.
+    pub ai: ai::AiState,
     /// Where the host keeps face models (one folder each); `None` where there is no file system (the web).
     pub face_models_dir: Option<std::path::PathBuf>,
     /// Face model downloads started this session (the staged files wait in `<face_models_dir>/.downloads`).
@@ -294,6 +297,7 @@ impl Session {
             interaction: None,
             skip_auto_write: false,
             denoise: Default::default(),
+            ai: Default::default(),
             face_models_dir: None,
             face_downloads: Default::default(),
             face_catalog: Default::default(),
@@ -451,8 +455,7 @@ impl Session {
     }
 
     /// Apply an op that is LightCraft's own bookkeeping rather than something the user did (faces found by the background
-    /// scan): journaled like any op, but not an undo step, and it leaves the redo stack alone.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// scan, AI analysis): journaled like any op, but not an undo step, and it leaves the redo stack alone.
     pub(crate) fn apply_system(&mut self, op: Op) -> Result<()> {
         let fwd = op.clone();
         self.catalog.apply(op)?;
@@ -837,6 +840,8 @@ pub fn json_delta(old: &Value, new: &Value) -> Option<Value> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_ai;
 #[cfg(test)]
 mod tests_album_order;
 #[cfg(test)]

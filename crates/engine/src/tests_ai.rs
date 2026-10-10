@@ -1,0 +1,162 @@
+//! AI analysis (`ai.*`) with a stand-in model: its labels and score come from the picture's brightness, which is
+//! enough to test the queue, the workers, the catalog and the commands anywhere (Apple's Vision itself is tested on a
+//! Mac, in `lightcraft-vision`).
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use lightcraft_catalog::{AiAnalysis, AiLabel, Filter, PhotoId, Sort, SortKey};
+use serde_json::{Value, json};
+
+use crate::Session;
+
+/// A demo session whose model calls a picture `bright` or `dark` and scores it by its mean brightness (0..100);
+/// counts its calls.
+fn session() -> (Session, Arc<AtomicUsize>) {
+    let mut s = Session::with_demo();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c = calls.clone();
+    s.ai.analyzer = Some(Arc::new(move |img: &lightcraft_raster::Rgba8| {
+        c.fetch_add(1, Ordering::SeqCst);
+        if img.data.is_empty() {
+            return Err("an empty picture".into());
+        }
+        let mean = img.data.iter().map(|p| (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) as f32 / 765.0).sum::<f32>() / img.data.len() as f32;
+        let name = if mean > 0.4 { "bright" } else { "dark" };
+        Ok(AiAnalysis {
+            labels: vec![AiLabel { name: name.into(), confidence: 0.9 }, AiLabel { name: "photo".into(), confidence: 0.5 }],
+            aesthetic: Some(mean * 100.0),
+            utility: false,
+            model: "test".into(),
+        })
+    }));
+    (s, calls)
+}
+
+fn all(s: &Session) -> Vec<PhotoId> {
+    s.catalog.query(&Filter::default(), &Sort::default())
+}
+
+#[test]
+fn analyze_waits_stores_and_makes_photos_searchable() {
+    let (mut s, calls) = session();
+    let ids = all(&s);
+    assert!(ids.len() >= 4, "the demo library has photos");
+    let r = s.execute("ai.analyze", &json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()})).unwrap();
+    assert_eq!(r["queued"], json!(ids.len()), "{r}");
+    assert_eq!(r["done"], json!(ids.len()), "{r}");
+    assert_eq!(r["pending"], json!(0), "{r}");
+    assert_eq!(r["photos"].as_array().map(Vec::len), Some(ids.len()), "{r}");
+    assert_eq!(calls.load(Ordering::SeqCst), ids.len());
+    for id in &ids {
+        let p = s.catalog.photo(*id).unwrap();
+        let a = p.ai.as_ref().unwrap();
+        assert_eq!(a.model, "test");
+        assert!(a.aesthetic.is_some_and(|v| (0.0..=100.0).contains(&v)));
+    }
+    // not an undo step: it is the model's bookkeeping, not an edit
+    assert!(s.undo.last().is_none_or(|u| !u.label.contains("AI")));
+    // searchable, sortable, and in the photo summaries
+    let q = |s: &Session, text: &str| s.catalog.query(&Filter { text: text.into(), ..Default::default() }, &Sort::default()).len();
+    assert_eq!(q(&s, "ai:photo"), ids.len());
+    assert_eq!(q(&s, "ai:bright") + q(&s, "ai:dark"), ids.len());
+    assert_eq!(q(&s, "aesthetic:>-1"), ids.len());
+    assert_eq!(q(&s, "analyzed:no"), 0);
+    let best = s.catalog.query(&Filter::default(), &Sort { key: SortKey::Aesthetic, ascending: false, ..Default::default() });
+    let score = |id: &PhotoId| s.catalog.photo(*id).and_then(|p| p.ai.as_ref()?.aesthetic).unwrap();
+    assert!(best.windows(2).all(|w| score(&w[0]) >= score(&w[1])), "best first");
+    let listed = s.execute("catalog.query", &json!({"filter": {"text": "ai:photo"}, "sort": {"key": "aesthetic"}, "limit": 2})).unwrap();
+    let first = &listed["photos"][0];
+    assert!(first["aesthetic"].is_number() && first["aiLabels"].as_array().is_some_and(|l| !l.is_empty()), "{listed}");
+    // photos analyzed before are skipped unless forced
+    let again = s.execute("ai.analyze", &json!({"ids": [ids[0].0]})).unwrap();
+    assert_eq!((again["queued"].clone(), again["skipped"].clone()), (json!(0), json!(1)), "{again}");
+    assert_eq!(calls.load(Ordering::SeqCst), ids.len());
+    let forced = s.execute("ai.analyze", &json!({"ids": [ids[0].0], "force": true})).unwrap();
+    assert_eq!(forced["queued"], json!(1), "{forced}");
+    assert_eq!(calls.load(Ordering::SeqCst), ids.len() + 1);
+}
+
+#[test]
+fn without_ids_the_view_is_analyzed_and_failures_are_reported() {
+    let (mut s, _) = session();
+    let n = s.visible_cloned().len();
+    // a model that fails on every second call
+    let k = Arc::new(AtomicUsize::new(0));
+    let ok = s.ai.analyzer.clone().unwrap();
+    s.ai.analyzer = Some(Arc::new(
+        move |img: &lightcraft_raster::Rgba8| {
+            if k.fetch_add(1, Ordering::SeqCst) % 2 == 1 { Err("the model said no".into()) } else { ok(img) }
+        },
+    ));
+    let r = s.execute("ai.analyze", &json!({})).unwrap();
+    let failed = r["failed"].as_array().map_or(0, Vec::len);
+    assert_eq!(r["queued"], json!(n), "{r}");
+    assert_eq!(r["done"].as_u64().unwrap() as usize + failed, n, "{r}");
+    assert!(failed > 0 && r["failed"][0]["error"].as_str().unwrap().contains("said no"), "{r}");
+    // the failed ones are still unanalyzed: a second run takes only them
+    let again = s.execute("ai.analyze", &json!({})).unwrap();
+    assert_eq!(again["queued"], json!(failed), "{again}");
+}
+
+#[test]
+fn background_mode_returns_at_once_and_status_collects() {
+    let (mut s, _) = session();
+    s.ai.background = true;
+    let ids = all(&s);
+    let r = s.execute("ai.analyze", &json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()})).unwrap();
+    assert_eq!(r["queued"], json!(ids.len()), "{r}");
+    assert!(r.get("photos").is_none(), "the app is not made to wait: {r}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let mut seen = 0;
+    loop {
+        let st = s.execute("ai.status", &json!({})).unwrap();
+        seen += st["photos"].as_array().map_or(0, Vec::len);
+        if st["pending"] == json!(0) {
+            assert_eq!(st["done"], json!(ids.len()), "{st}");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the analysis never finished: {st}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(seen, ids.len(), "every finished photo is reported once");
+    assert!(!s.ai.busy());
+}
+
+#[test]
+fn a_budget_returns_early_and_cancel_drops_the_rest() {
+    let (mut s, _) = session();
+    // a slow model: the budget runs out first
+    let ok = s.ai.analyzer.clone().unwrap();
+    s.ai.analyzer = Some(Arc::new(move |img: &lightcraft_raster::Rgba8| {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        ok(img)
+    }));
+    let ids = all(&s);
+    let r = s.execute("ai.analyze", &json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>(), "budgetMs": 1})).unwrap();
+    assert!(r["pending"].as_u64().unwrap() > 0, "{r}");
+    let c = s.execute("ai.cancel", &json!({})).unwrap();
+    let dropped = c["cancelled"].as_u64().unwrap() as usize;
+    // what was running finishes and is stored; nothing else starts
+    let r = s.execute("ai.analyze", &json!({"ids": [], "budgetMs": 30_000})).unwrap();
+    assert_eq!(r["pending"], json!(0), "{r}");
+    let analyzed = ids.iter().filter(|id| s.catalog.photo(**id).is_some_and(|p| p.ai.is_some())).count();
+    assert_eq!(analyzed + dropped, ids.len(), "{r}");
+}
+
+#[test]
+fn without_a_model_the_commands_say_why() {
+    let mut s = Session::with_demo();
+    s.ai.analyzer = None;
+    let e = s.execute("ai.analyze", &json!({})).unwrap_err().to_string();
+    assert!(e.contains("Vision"), "{e}");
+    let st: Value = s.execute("ai.status", &json!({})).unwrap();
+    assert_eq!(st["available"], json!(false));
+    #[cfg(not(target_os = "macos"))]
+    {
+        // off macOS there is no model by default, and the command is not in the menus
+        assert!(Session::with_demo().ai.analyzer.is_none());
+        let spec = crate::find_command("ai.analyze").unwrap();
+        assert!(spec.menu.is_empty());
+    }
+}

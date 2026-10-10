@@ -19,7 +19,8 @@ use serde::Serialize;
 /// - an eighth for the GPU renderer's pool of recycled buffers (trimmed when the app is idle).
 ///
 /// The rest is headroom for what isn't cached (renders in progress, textures, the UI). Default:
-/// a quarter of the machine's RAM, at most 1.5 GiB (`LIGHTCRAFT_MEMORY_MB` overrides it).
+/// a quarter of the machine's RAM (on Linux, of the cgroup's memory limit when that is lower: a
+/// container, a systemd scope), at most 1.5 GiB (`LIGHTCRAFT_MEMORY_MB` overrides it).
 pub fn default_budget() -> usize {
     if let Some(mb) = std::env::var("LIGHTCRAFT_MEMORY_MB").ok().and_then(|v| v.trim().parse::<usize>().ok()).filter(|m| *m >= 64) {
         return mb << 20;
@@ -31,13 +32,13 @@ pub fn default_budget() -> usize {
     }
 }
 
-/// Physical memory (bytes), when the platform tells us without native calls.
+/// Physical memory (bytes), when the platform tells us without native calls; on Linux no more than
+/// the memory limit of the process's cgroup ([`cgroup_memory`]).
 fn total_ram() -> Option<usize> {
     #[cfg(target_os = "linux")]
     {
-        let s = std::fs::read_to_string("/proc/meminfo").ok()?;
-        let kb: usize = s.lines().find(|l| l.starts_with("MemTotal:"))?.split_whitespace().nth(1)?.parse().ok()?;
-        Some(kb * 1024)
+        let ram = meminfo_bytes(&std::fs::read_to_string("/proc/meminfo").ok()?, "MemTotal:")?;
+        Some(cgroup_memory().map_or(ram, |(limit, _)| ram.min(limit)))
     }
     #[cfg(target_os = "macos")]
     {
@@ -53,6 +54,73 @@ fn total_ram() -> Option<usize> {
     {
         None
     }
+}
+
+/// Memory that can be taken now (bytes), when known: on Linux the kernel's estimate of available
+/// memory, and no more than is left under the cgroup's limit ([`cgroup_memory`]). `None` elsewhere.
+fn available_ram() -> Option<usize> {
+    #[cfg(target_os = "linux")]
+    {
+        let free = meminfo_bytes(&std::fs::read_to_string("/proc/meminfo").ok()?, "MemAvailable:")?;
+        Some(cgroup_memory().map_or(free, |(limit, used)| free.min(limit.saturating_sub(used))))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// `field` (`MemTotal:`, `MemAvailable:`…) of `/proc/meminfo`, in bytes.
+#[cfg(any(target_os = "linux", test))]
+fn meminfo_bytes(meminfo: &str, field: &str) -> Option<usize> {
+    let kb: usize = meminfo.lines().find(|l| l.starts_with(field))?.split_whitespace().nth(1)?.parse().ok()?;
+    kb.checked_mul(1024)
+}
+
+/// The tightest memory limit of the process's cgroup and its ancestors, and the usage of the
+/// cgroup that sets it (bytes); `None` without a limit. A process started in a container or a
+/// memory-limited systemd scope is killed past that limit however much RAM the machine has.
+#[cfg(target_os = "linux")]
+fn cgroup_memory() -> Option<(usize, usize)> {
+    cgroup_limit(&std::fs::read_to_string("/proc/self/cgroup").ok()?, |p| std::fs::read_to_string(p).ok())
+}
+
+/// [`cgroup_memory`] from the text of `/proc/self/cgroup`, reading the cgroup files with `read`:
+/// cgroup v2 (`0::/path`: `memory.max`, `memory.current`) or v1 (`N:memory:/path`:
+/// `memory.limit_in_bytes`, `memory.usage_in_bytes`, where no limit reads as a huge number).
+#[cfg(any(target_os = "linux", test))]
+fn cgroup_limit(proc_cgroup: &str, read: impl Fn(&str) -> Option<String>) -> Option<(usize, usize)> {
+    let number = |path: &str| read(path).and_then(|s| s.trim().parse::<usize>().ok()); // v2 "max": none
+    for line in proc_cgroup.lines() {
+        let mut parts = line.splitn(3, ':');
+        let (Some(id), Some(controllers), Some(path)) = (parts.next(), parts.next(), parts.next()) else { continue };
+        let (root, max_file, used_file) = if id == "0" && controllers.is_empty() {
+            ("/sys/fs/cgroup", "memory.max", "memory.current")
+        } else if controllers.split(',').any(|c| c == "memory") {
+            ("/sys/fs/cgroup/memory", "memory.limit_in_bytes", "memory.usage_in_bytes")
+        } else {
+            continue;
+        };
+        let mut tightest: Option<(usize, usize)> = None;
+        let mut dir = path.trim_end_matches('/');
+        // the cgroup, then each ancestor up to the root (a path has far fewer than 64 levels)
+        for _ in 0..64 {
+            if let Some(limit) = number(&format!("{root}{dir}/{max_file}"))
+                && limit < 1 << 60
+                && tightest.is_none_or(|(l, _)| limit < l)
+            {
+                tightest = Some((limit, number(&format!("{root}{dir}/{used_file}")).unwrap_or(0)));
+            }
+            if dir.is_empty() {
+                break;
+            }
+            dir = dir.rfind('/').and_then(|i| dir.get(..i)).unwrap_or("");
+        }
+        if tightest.is_some() {
+            return tightest;
+        }
+    }
+    None
 }
 
 static BUDGET: AtomicUsize = AtomicUsize::new(0);
@@ -89,6 +157,19 @@ fn apply(b: usize) {
 /// Share of the budget for the engine's caches.
 pub fn cache_share(budget: usize) -> usize {
     budget / 2
+}
+
+/// The memory a batch export may fill with photos rendered side by side
+/// ([`crate::export::batch_jobs`]): half the machine's RAM less the budget (what the caches and
+/// other decodes may hold meanwhile), at least the budget; twice the budget when the RAM is unknown;
+/// and never more than is available now ([`available_ram`], Linux).
+pub fn export_room() -> usize {
+    let b = budget();
+    let room = match total_ram() {
+        Some(ram) => (ram / 2).saturating_sub(b).max(b),
+        None => b.saturating_mul(2),
+    };
+    available_ram().map_or(room, |free| room.min(free))
 }
 
 /// A weighted semaphore over bytes of working memory: [`WorkGate::acquire`] waits while other
@@ -296,5 +377,65 @@ impl crate::Session {
         let b = set_budget(bytes);
         self.media.set_budget(cache_share(b));
         b
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn files(entries: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: std::collections::HashMap<String, String> = entries.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        move |p| map.get(p).cloned()
+    }
+
+    /// The OOM that prompted this: a 2.5 GB systemd scope on a 7 GB machine killed an export sized by the machine's RAM.
+    #[test]
+    fn the_tightest_cgroup_limit_counts() {
+        let cg = "0::/user.slice/app.slice/run-1.scope\n";
+        let read = files(&[
+            ("/sys/fs/cgroup/user.slice/app.slice/run-1.scope/memory.max", "2621440000\n"),
+            ("/sys/fs/cgroup/user.slice/app.slice/run-1.scope/memory.current", "730112000\n"),
+            ("/sys/fs/cgroup/user.slice/app.slice/memory.max", "max\n"),
+            ("/sys/fs/cgroup/user.slice/memory.max", "8000000000\n"),
+        ]);
+        assert_eq!(cgroup_limit(cg, &read), Some((2_621_440_000, 730_112_000)));
+        // a tighter ancestor wins, with its own usage
+        let read = files(&[
+            ("/sys/fs/cgroup/a/b/memory.max", "4000000000"),
+            ("/sys/fs/cgroup/a/memory.max", "1000000000"),
+            ("/sys/fs/cgroup/a/memory.current", "200"),
+        ]);
+        assert_eq!(cgroup_limit("0::/a/b", &read), Some((1_000_000_000, 200)));
+        // the root cgroup itself
+        let read = files(&[("/sys/fs/cgroup/memory.max", "3000")]);
+        assert_eq!(cgroup_limit("0::/", &read), Some((3000, 0)));
+    }
+
+    #[test]
+    fn no_limit_means_none() {
+        let read = files(&[("/sys/fs/cgroup/user.slice/memory.max", "max")]);
+        assert_eq!(cgroup_limit("0::/user.slice", &read), None);
+        assert_eq!(cgroup_limit("", &read), None);
+        assert_eq!(cgroup_limit("garbage without colons\n12:cpu:/x", &read), None);
+        // cgroup v1 reports "no limit" as a huge number, and a real one as bytes
+        let v1 = "12:cpu,cpuacct:/docker/1\n9:memory:/docker/1\n";
+        let unlimited = files(&[("/sys/fs/cgroup/memory/docker/1/memory.limit_in_bytes", "9223372036854771712")]);
+        assert_eq!(cgroup_limit(v1, &unlimited), None);
+        let limited = files(&[
+            ("/sys/fs/cgroup/memory/docker/1/memory.limit_in_bytes", "536870912"),
+            ("/sys/fs/cgroup/memory/docker/1/memory.usage_in_bytes", "1024"),
+        ]);
+        assert_eq!(cgroup_limit(v1, &limited), Some((536_870_912, 1024)));
+    }
+
+    #[test]
+    fn meminfo_fields_in_bytes() {
+        let m = "MemTotal:        7444620 kB\nMemFree:         2177948 kB\nMemAvailable:    5352676 kB\n";
+        assert_eq!(meminfo_bytes(m, "MemTotal:"), Some(7_444_620 * 1024));
+        assert_eq!(meminfo_bytes(m, "MemAvailable:"), Some(5_352_676 * 1024));
+        assert_eq!(meminfo_bytes(m, "SwapTotal:"), None);
+        assert_eq!(meminfo_bytes("MemTotal: lots kB", "MemTotal:"), None);
+        assert_eq!(meminfo_bytes("MemTotal: 99999999999999999999 kB", "MemTotal:"), None);
     }
 }

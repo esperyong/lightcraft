@@ -229,9 +229,14 @@ means no notifications. `ping` is answered at photo boundaries; other requests w
 until the export ends. EOF lets a pending export finish and preserves queued requests.
 
 `notifications/cancelled` with `params.requestId` stops the matching export before its next
-photo, suppressing its response. Unknown/completed request ids are ignored. A photo already
-being processed finishes first: completed photos remain, each written with the existing atomic
-file writer, and there are no partial files to delete. Unrelated outputs and earlier exports
+photo, suppressing its response. Unknown/completed request ids are ignored. Photos already
+being processed finish first and are dropped unwritten: completed photos remain, each written
+with the existing atomic file writer, and there are no partial files to delete.
+
+A batch renders several photos at once on worker threads (half the cores, at most four, and only
+as many as fit in memory side by side; `LIGHTCRAFT_EXPORT_THREADS=N` sets the number, 1 = one at a
+time). Files are still named and written in the batch's order, so the output is the same either
+way; progress counts the photos written. Unrelated outputs and earlier exports
 are untouched. A failed export is an `isError` tool result. Transport mutexes recover poisoning.
 
 Connect mode and exports inside `command_batch` remain synchronous and do not report MCP

@@ -370,3 +370,102 @@ fn exports_are_atomic_without_a_sync() {
     assert!(syncs_on_this_thread() > before, "the durable writer syncs");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A fake file system for batch tests: what is written (path, bytes), and paths taken beforehand.
+fn run_fake(
+    items: Vec<crate::export::PreparedExport>,
+    jobs: usize,
+    o: &ExportOptions,
+    existing: &[&str],
+    stop_on_error: bool,
+) -> (Result<Vec<serde_json::Value>, String>, Vec<(String, Vec<u8>)>) {
+    let mut written = Vec::new();
+    let mut write = |p: &str, b: &[u8]| {
+        written.push((p.to_string(), b.to_vec()));
+        Ok(())
+    };
+    let to = crate::export::Destination { dir: "out".into(), exact: None };
+    let r = crate::export::run_batch_with(items, jobs, o, &to, &mut write, &|p| existing.contains(&p), stop_on_error, &mut |_, _| true);
+    (r, written)
+}
+
+/// Issue #1: several photos exported at once give the same files, names and results as one at a time — including
+/// the names the Unique policy picks when every photo gets the same name from the template.
+#[test]
+fn a_parallel_batch_writes_what_one_at_a_time_writes() {
+    let mut s = Session::with_demo();
+    let ids: Vec<_> = s.visible().iter().copied().take(6).collect();
+    assert_eq!(ids.len(), 6);
+    s.execute("library.select", &json!({"ids": ids[1..3], "active": ids[1]})).unwrap();
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.6})).unwrap();
+    for (naming, existing) in [("{name}", &[][..]), ("Same", &["out/Same.png"][..])] {
+        let o = ExportOptions::from_json(&json!({"format": "png", "width": 40, "naming": naming}));
+        let (one, one_files) = run_fake(crate::export::prepare_batch(&mut s, &ids, &o).unwrap(), 1, &o, existing, true);
+        let (many, many_files) = run_fake(crate::export::prepare_batch(&mut s, &ids, &o).unwrap(), 4, &o, existing, true);
+        assert_eq!(one.unwrap(), many.unwrap());
+        assert_eq!(one_files.len(), 6);
+        assert_eq!(one_files, many_files, "same paths, same bytes, same order");
+        if naming == "Same" {
+            let paths: Vec<_> = many_files.iter().map(|f| f.0.as_str()).collect();
+            assert_eq!(paths, ["out/Same-2.png", "out/Same-3.png", "out/Same-4.png", "out/Same-5.png", "out/Same-6.png", "out/Same-7.png"]);
+        }
+    }
+}
+
+/// Issue #1: with photos in flight on worker threads, a photo that fails is reported in its place and the others are
+/// written (or, with stop_on_error, the batch stops with its error), and a cancel writes nothing more — the photos
+/// already in flight are dropped.
+#[test]
+fn a_parallel_batch_reports_failures_in_order_and_stops_when_cancelled() {
+    use crate::tests_xmp::synthetic_dng_of;
+    let dir = temp_dir("export-parallel");
+    for seed in 0..5u16 {
+        let data: Vec<u16> = (0..32 * 24).map(|i| 256 + seed * 40 + (i % 32) as u16 * 90).collect();
+        std::fs::write(dir.join(format!("Shot{seed}.dng")), synthetic_dng_of(32, 24, "RGGB", data, None, Default::default())).unwrap();
+    }
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [dir.to_string_lossy()]})).unwrap();
+    let mut photos: Vec<_> = s.catalog.photos().map(|p| (p.file_name.clone(), p.id)).collect();
+    photos.sort();
+    let ids: Vec<_> = photos.iter().map(|p| p.1).collect();
+    assert_eq!(ids.len(), 5, "{photos:?}");
+    std::fs::remove_file(dir.join("Shot2.dng")).unwrap();
+    // the original + its edits: the file is read when the photo's turn comes
+    let o = ExportOptions::from_json(&json!({"format": "original"}));
+
+    let (r, written) = run_fake(crate::export::prepare_batch(&mut s, &ids, &o).unwrap(), 3, &o, &[], false);
+    let r = r.unwrap();
+    assert_eq!(r.len(), 5);
+    assert!(r[2]["error"].as_str().is_some_and(|e| e.contains("Shot2.dng")), "{r:?}");
+    for i in [0, 1, 3, 4] {
+        assert_eq!(r[i]["path"], format!("out/Shot{i}.dng"), "{r:?}");
+    }
+    let paths: Vec<_> = written.iter().map(|w| w.0.as_str()).collect();
+    assert_eq!(
+        paths,
+        ["out/Shot0.dng", "out/Shot0.xmp", "out/Shot1.dng", "out/Shot1.xmp", "out/Shot3.dng", "out/Shot3.xmp", "out/Shot4.dng", "out/Shot4.xmp"]
+    );
+
+    let (r, written) = run_fake(crate::export::prepare_batch(&mut s, &ids, &o).unwrap(), 3, &o, &[], true);
+    assert!(r.unwrap_err().contains("Shot2.dng"));
+    assert_eq!(written.len(), 4, "the two photos before the failed one");
+
+    // cancelled once two are done: the photos already in flight finish unseen
+    let items = crate::export::prepare_batch(&mut s, &[ids[0], ids[1], ids[3], ids[4]], &o).unwrap();
+    let mut written = Vec::new();
+    let mut write = |p: &str, _: &[u8]| {
+        written.push(p.to_string());
+        Ok(())
+    };
+    let mut asked = Vec::new();
+    let to = crate::export::Destination { dir: "out".into(), exact: None };
+    let r = crate::export::run_batch_with(items, 3, &o, &to, &mut write, &|_| false, false, &mut |done, name| {
+        asked.push((done, name.to_string()));
+        done < 2
+    })
+    .unwrap();
+    assert_eq!(r.len(), 2);
+    assert_eq!(written, ["out/Shot0.dng", "out/Shot0.xmp", "out/Shot1.dng", "out/Shot1.xmp"]);
+    assert_eq!(asked, [(0, "Shot0.dng".to_string()), (1, "Shot1.dng".to_string()), (2, "Shot3.dng".to_string())]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

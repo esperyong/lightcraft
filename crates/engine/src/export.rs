@@ -1324,6 +1324,9 @@ pub struct PreparedExport {
     work: Work,
     /// The library's originals, which [`run_batch`] never writes over (shared by a batch).
     guard: std::sync::Arc<crate::originals::OriginalGuard>,
+    /// Roughly the most memory [`PreparedExport::run`] holds at once ([`work_bytes`]): how many
+    /// photos of a batch fit in memory side by side ([`batch_jobs`]).
+    work_bytes: usize,
 }
 
 struct RenderWork {
@@ -1373,26 +1376,54 @@ fn prepare_guarded(
 ) -> Result<PreparedExport, String> {
     let p = session.catalog.photo(id).ok_or("no such photo")?;
     let file_name = o.file_name_for(p, seq);
-    let work = if o.format.is_rendered() {
+    let native = (p.width as usize).saturating_mul(p.height as usize);
+    let long = (p.width as usize).max(p.height as usize);
+    let (work, work_bytes) = if o.format.is_rendered() {
         let (w, h) = output_size(p, o);
         let meta = export_metadata(p, o);
         let job = session.export_job(id, w, h, o.effective_space(), o.effective_depth())?;
-        Work::Render(Box::new(RenderWork { job, meta, opts: o.clone() }))
+        let bytes = work_bytes(native, long, job.level.max_edge(), w.saturating_mul(h));
+        (Work::Render(Box::new(RenderWork { job, meta, opts: o.clone() })), bytes)
     } else {
         let lightcraft_catalog::Source::File { path } = &p.source else {
             return Err(format!("{} is a generated demo photo: it has no original file to export", p.file_name));
         };
-        Work::File {
+        let dng = (o.format == ExportFormat::Dng).then_some(o.dng_compression);
+        // the file's bytes (about two per pixel for a raw); a DNG also holds the decoded samples and the new file
+        let bytes = native.saturating_mul(if dng.is_some() { 8 } else { 2 });
+        let work = Work::File {
             path: path.clone(),
             read: session.media.file_bytes.clone(),
             packet: crate::sidecar::sidecar_packet(p, &session.catalog),
-            dng: (o.format == ExportFormat::Dng).then_some(o.dng_compression),
+            dng,
             label: p.file_name.clone(),
             size: (p.width as usize, p.height as usize),
-        }
+        };
+        (work, bytes)
     };
-    Ok(PreparedExport { photo: id, file_name, work, guard })
+    Ok(PreparedExport { photo: id, file_name, work, guard, work_bytes })
 }
+
+/// Roughly the peak memory of rendering one photo of `native` pixels (long edge `long`) from the source level that
+/// keeps at most `level_edge` pixels on the long edge, into `out` pixels: the file and its samples at native size,
+/// the decoded source, the render's planes at the output size and the encoded file. Measured on 24 MP raws (CPU
+/// render, peak resident size): 1.8 GB at full size (estimate 2.1 GB), 0.34 GB at 2048 px (estimate 0.39 GB).
+fn work_bytes(native: usize, long: usize, level_edge: usize, out: usize) -> usize {
+    let source = if long > level_edge && long > 0 {
+        let s = level_edge as f64 / long as f64;
+        (native as f64 * s * s) as usize
+    } else {
+        native
+    };
+    native.saturating_mul(NATIVE_BYTES).saturating_add(source.saturating_mul(SOURCE_BYTES)).saturating_add(out.saturating_mul(OUTPUT_BYTES))
+}
+
+/// Bytes per native pixel held through a decode: the file and its raw samples (see [`work_bytes`]).
+const NATIVE_BYTES: usize = 4;
+/// Bytes per source pixel at the peak of a decode (see [`work_bytes`]).
+const SOURCE_BYTES: usize = 36;
+/// Bytes per output pixel at the peak of a render and encode (see [`work_bytes`]).
+const OUTPUT_BYTES: usize = 48;
 
 impl PreparedExport {
     pub fn run(self) -> Result<Exported, String> {
@@ -1494,12 +1525,18 @@ fn sidecar_path(main: &str, ext: &str) -> String {
     std::path::Path::new(main).with_extension(ext).to_string_lossy().to_string()
 }
 
-/// Run prepared exports in order: pick each one's path, and hand the bytes (and sidecars) to
-/// `write`. `exists` tells whether a path is taken. The conflict policy applies to a file and its
-/// sidecars as one: with Unique both get the same free name, with Skip the photo is skipped when
-/// either is taken. A path that is a catalogued original (or its sidecar) is refused whatever the
-/// policy. `progress(done, next file)` is called before each photo; returning false cancels the
-/// rest. Returns one JSON object per photo: `{path, width, height, bytes, sidecars}`,
+/// Run prepared exports: pick each one's path, and hand the bytes (and sidecars) to `write`.
+/// `exists` tells whether a path is taken. The conflict policy applies to a file and its sidecars
+/// as one: with Unique both get the same free name, with Skip the photo is skipped when either is
+/// taken. A path that is a catalogued original (or its sidecar) is refused whatever the policy.
+///
+/// Several photos are read, decoded, rendered and encoded at once on worker threads
+/// ([`batch_jobs`]: by the cores and the memory each photo needs; `LIGHTCRAFT_EXPORT_THREADS`
+/// overrides it, 1 = one at a time), while naming and writing stay on the calling thread in the
+/// batch's order, so the files and results are the same as one at a time.
+/// `progress(done, next file)` is called before each photo's result is awaited, `done` photos
+/// being finished; returning false cancels the rest (photos already being rendered then finish
+/// and are dropped). Returns one JSON object per photo: `{path, width, height, bytes, sidecars}`,
 /// `{skipped: path}` or (unless `stop_on_error`) `{photo, file, error}`.
 pub fn run_batch(
     items: Vec<PreparedExport>,
@@ -1510,31 +1547,186 @@ pub fn run_batch(
     stop_on_error: bool,
     progress: &mut dyn FnMut(usize, &str) -> bool,
 ) -> Result<Vec<serde_json::Value>, String> {
-    use serde_json::json;
-    let join = |a: &str, b: &str| if a.is_empty() { b.to_string() } else { format!("{}/{b}", a.trim_end_matches('/')) };
-    let dir = if o.subfolder.is_empty() { to.dir.clone() } else { join(&to.dir, &o.subfolder) };
-    let single = items.len() == 1;
-    let mut taken = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for (i, item) in items.into_iter().enumerate() {
-        if !progress(i, &item.file_name) {
-            break;
+    let jobs = batch_jobs(&items);
+    if items.len() > 1 {
+        log::debug!("export: {} photos, {jobs} at once", items.len());
+    }
+    run_batch_with(items, jobs, o, to, write, exists, stop_on_error, progress)
+}
+
+/// [`run_batch`] with `jobs` photos in flight at once (1: one after the other, on this thread).
+pub(crate) fn run_batch_with(
+    items: Vec<PreparedExport>,
+    jobs: usize,
+    o: &ExportOptions,
+    to: &Destination,
+    write: &mut dyn FnMut(&str, &[u8]) -> Result<(), String>,
+    exists: &dyn Fn(&str) -> bool,
+    stop_on_error: bool,
+    progress: &mut dyn FnMut(usize, &str) -> bool,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut sink = Sink::new(o, to, items.len() == 1, write, exists, stop_on_error);
+    if jobs <= 1 {
+        for (i, item) in items.into_iter().enumerate() {
+            if !progress(i, &item.file_name) {
+                break;
+            }
+            let (photo, name, guard) = (item.photo, item.file_name.clone(), item.guard.clone());
+            sink.take(photo, name, &guard, item.run())?;
         }
-        let (photo, name, guard) = (item.photo, item.file_name.clone(), item.guard.clone());
-        let e = match item.run() {
+        return Ok(sink.out);
+    }
+    let heads: Vec<_> = items.iter().map(|i| (i.photo, i.file_name.clone(), i.guard.clone())).collect();
+    std::thread::scope(|s| {
+        let mut todo = items.into_iter();
+        let mut running = std::collections::VecDeque::new();
+        let mut outcome = Ok(());
+        for (i, (photo, name, guard)) in heads.into_iter().enumerate() {
+            if !progress(i, &name) {
+                break;
+            }
+            // keep `jobs` photos in flight; they start in order, so photo i is the oldest
+            while running.len() < jobs
+                && let Some(item) = todo.next()
+            {
+                running.push_back(start_export(s, item));
+            }
+            let Some(job) = running.pop_front() else { break };
+            if let Err(e) = sink.take(photo, name, &guard, job.wait()) {
+                outcome = Err(e);
+                break;
+            }
+        }
+        // after a cancel or an error: let the photos still in flight end, and drop them
+        for job in running {
+            let _ = job.wait();
+        }
+        outcome
+    })?;
+    Ok(sink.out)
+}
+
+/// How many photos of `items` [`run_batch`] works on at once: half the cores (each photo's
+/// decode, render and encode already spread over all of them; a second one fills their serial
+/// parts and the GPU's idle time), at most [`MAX_JOBS`], and no more than fit side by side in
+/// [`crate::memory::export_room`] at the largest photo's [`work_bytes`]. `LIGHTCRAFT_EXPORT_THREADS`
+/// sets the number instead. One on wasm32 (no threads).
+pub fn batch_jobs(items: &[PreparedExport]) -> usize {
+    if cfg!(target_arch = "wasm32") || items.len() < 2 {
+        return 1;
+    }
+    let asked = std::env::var("LIGHTCRAFT_EXPORT_THREADS").ok().and_then(|v| v.trim().parse::<usize>().ok());
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let heaviest = items.iter().map(|i| i.work_bytes).max().unwrap_or(0);
+    pick_jobs(items.len(), asked, cores, crate::memory::export_room(), heaviest)
+}
+
+/// [`batch_jobs`] for `photos` photos, the largest needing `heaviest` bytes, on `cores` cores with
+/// `room` bytes to fill; `asked` (above 0) wins over cores and memory.
+fn pick_jobs(photos: usize, asked: Option<usize>, cores: usize, room: usize, heaviest: usize) -> usize {
+    let jobs = match asked.filter(|n| *n > 0) {
+        Some(n) => n.min(64),
+        None => (cores / 2).clamp(1, MAX_JOBS).min((room / heaviest.max(1)).max(1)),
+    };
+    jobs.min(photos).max(1)
+}
+
+/// The most photos [`batch_jobs`] picks by itself.
+pub const MAX_JOBS: usize = 4;
+
+/// A photo of a batch being exported: done on this thread, or running on a worker.
+enum Pending<'scope> {
+    Done(Result<Exported, String>),
+    Running(std::thread::ScopedJoinHandle<'scope, Result<Exported, String>>),
+}
+
+impl Pending<'_> {
+    fn wait(self) -> Result<Exported, String> {
+        match self {
+            Pending::Done(r) => r,
+            // (`guard::catch` already turns a panic into the photo's error)
+            Pending::Running(h) => {
+                h.join().unwrap_or_else(|p| Err(format!("export failed unexpectedly: {}", crate::guard::panic_message(p.as_ref()))))
+            }
+        }
+    }
+}
+
+/// Start exporting `item` on a worker thread of `s`; on this thread when no thread can be made.
+fn start_export<'scope>(s: &'scope std::thread::Scope<'scope, '_>, item: PreparedExport) -> Pending<'scope> {
+    let label = format!("export of {}", item.file_name);
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(item)));
+    let take = |slot: &std::sync::Mutex<Option<PreparedExport>>| slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    let worker = slot.clone();
+    let spawned = std::thread::Builder::new().name("export".into()).spawn_scoped(s, move || match take(&worker) {
+        Some(item) => crate::guard::catch(&label, || item.run()).and_then(|r| r),
+        None => Err("export: the photo was already taken".into()),
+    });
+    match spawned {
+        Ok(h) => Pending::Running(h),
+        Err(e) => {
+            log::warn!("export: no worker thread ({e}); exporting on this one");
+            Pending::Done(take(&slot).map_or_else(|| Err("export: the photo was already taken".into()), PreparedExport::run))
+        }
+    }
+}
+
+/// Where [`run_batch`] puts each photo's file, in the batch's order: the destination, the names
+/// given so far and the per-photo results.
+struct Sink<'a> {
+    o: &'a ExportOptions,
+    to: &'a Destination,
+    dir: String,
+    single: bool,
+    write: &'a mut dyn FnMut(&str, &[u8]) -> Result<(), String>,
+    exists: &'a dyn Fn(&str) -> bool,
+    stop_on_error: bool,
+    taken: std::collections::HashSet<String>,
+    out: Vec<serde_json::Value>,
+}
+
+fn join_path(a: &str, b: &str) -> String {
+    if a.is_empty() { b.to_string() } else { format!("{}/{b}", a.trim_end_matches('/')) }
+}
+
+impl<'a> Sink<'a> {
+    fn new(
+        o: &'a ExportOptions,
+        to: &'a Destination,
+        single: bool,
+        write: &'a mut dyn FnMut(&str, &[u8]) -> Result<(), String>,
+        exists: &'a dyn Fn(&str) -> bool,
+        stop_on_error: bool,
+    ) -> Self {
+        let dir = if o.subfolder.is_empty() { to.dir.clone() } else { join_path(&to.dir, &o.subfolder) };
+        Sink { o, to, dir, single, write, exists, stop_on_error, taken: Default::default(), out: Vec::new() }
+    }
+
+    /// Name and write photo `photo`'s export (`r`), or record why not. `Err` only with `stop_on_error`.
+    fn take(
+        &mut self,
+        photo: lightcraft_catalog::PhotoId,
+        name: String,
+        guard: &crate::originals::OriginalGuard,
+        r: Result<Exported, String>,
+    ) -> Result<(), String> {
+        use serde_json::json;
+        let (o, dir) = (self.o, self.dir.as_str());
+        let e = match r {
             Ok(e) => e,
-            Err(err) if stop_on_error => return Err(err),
+            Err(err) if self.stop_on_error => return Err(err),
             Err(err) => {
-                out.push(json!({"photo": photo.0, "file": name, "error": err}));
-                continue;
+                self.out.push(json!({"photo": photo.0, "file": name, "error": err}));
+                return Ok(());
             }
         };
         // the exported file and its sidecars
         let group = |main: &str| std::iter::once(main.to_string()).chain(e.sidecars.iter().map(|(x, _)| sidecar_path(main, x))).collect::<Vec<_>>();
-        let path = match to.exact.as_deref().filter(|_| single) {
+        let path = match self.to.exact.as_deref().filter(|_| self.single) {
             Some(p) => Ok(p.to_string()),
             None => {
-                let path = join(&dir, &e.file_name);
+                let path = join_path(dir, &e.file_name);
+                let (taken, exists) = (&self.taken, self.exists);
                 let busy = |main: &str| group(main).iter().any(|p| taken.contains(p) || exists(p));
                 if !busy(&path) {
                     Ok(path)
@@ -1542,12 +1734,12 @@ pub fn run_batch(
                     match o.conflict {
                         Conflict::Overwrite => Ok(path),
                         Conflict::Skip => {
-                            out.push(json!({"skipped": path}));
-                            continue;
+                            self.out.push(json!({"skipped": path}));
+                            return Ok(());
                         }
                         Conflict::Unique => {
                             let (stem, ext) = e.file_name.rsplit_once('.').map_or((e.file_name.as_str(), None), |(a, b)| (a, Some(b)));
-                            let name = |n: usize| join(&dir, &ext.map_or(format!("{stem}-{n}"), |x| format!("{stem}-{n}.{x}")));
+                            let name = |n: usize| join_path(dir, &ext.map_or(format!("{stem}-{n}"), |x| format!("{stem}-{n}.{x}")));
                             (2..1_000_000).map(name).find(|p| !busy(p)).ok_or_else(|| format!("{path}: no free file name"))
                         }
                     }
@@ -1555,6 +1747,7 @@ pub fn run_batch(
             }
         };
         let file = path.clone().unwrap_or_else(|_| name.clone());
+        let write = &mut *self.write;
         let written = path.and_then(|path| {
             let files = group(&path);
             // never over an original, whatever the conflict policy or the exact path said
@@ -1571,14 +1764,14 @@ pub fn run_batch(
         });
         match written {
             Ok((path, files, sidecars)) => {
-                taken.extend(files);
-                out.push(json!({"path": path, "width": e.width, "height": e.height, "bytes": e.bytes.len(), "sidecars": sidecars}));
+                self.taken.extend(files);
+                self.out.push(json!({"path": path, "width": e.width, "height": e.height, "bytes": e.bytes.len(), "sidecars": sidecars}));
             }
-            Err(err) if stop_on_error => return Err(err),
-            Err(err) => out.push(json!({"photo": photo.0, "file": file, "error": err})),
+            Err(err) if self.stop_on_error => return Err(err),
+            Err(err) => self.out.push(json!({"photo": photo.0, "file": file, "error": err})),
         }
+        Ok(())
     }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -2224,5 +2417,41 @@ mod tests {
         // the Export dialog's sliders (1–15 % size, 5–100 % opacity, 2–100 % width) stay inside the accepted ranges
         assert!(WATERMARK_SIZE_RANGE.0 <= 0.01 && WATERMARK_SIZE_RANGE.1 >= 0.15);
         assert!(WATERMARK_IMAGE_WIDTH_RANGE.0 <= 0.02 && WATERMARK_IMAGE_WIDTH_RANGE.1 >= 1.0);
+    }
+
+    #[test]
+    fn batch_jobs_follow_the_cores_and_the_memory() {
+        const GB: usize = 1 << 30;
+        // half the cores, at most MAX_JOBS, never more than there are photos
+        assert_eq!(pick_jobs(100, None, 4, 64 * GB, GB), 2);
+        assert_eq!(pick_jobs(100, None, 14, 64 * GB, GB), MAX_JOBS);
+        assert_eq!(pick_jobs(3, None, 32, 64 * GB, GB), 3);
+        assert_eq!(pick_jobs(1, None, 32, 64 * GB, GB), 1);
+        assert_eq!(pick_jobs(100, None, 1, 64 * GB, GB), 1);
+        // as many as fit in the room, and always one even when one doesn't
+        assert_eq!(pick_jobs(100, None, 14, 3 * GB, GB), 3);
+        assert_eq!(pick_jobs(100, None, 14, GB / 2, GB), 1);
+        assert_eq!(pick_jobs(100, None, 14, 0, 0), 1);
+        // asked for: wins over cores and memory (bounded), 0 means "pick"
+        assert_eq!(pick_jobs(100, Some(6), 2, GB / 2, GB), 6);
+        assert_eq!(pick_jobs(100, Some(1000), 2, 0, GB), 64);
+        assert_eq!(pick_jobs(5, Some(8), 2, 0, GB), 5);
+        assert_eq!(pick_jobs(100, Some(0), 4, 64 * GB, GB), 2);
+        // a 24 MP raw at full size needs about 2 GB, an export at 2048 px from the preview level far less
+        let full = work_bytes(6000 * 4000, 6000, usize::MAX, 6000 * 4000);
+        let small = work_bytes(6000 * 4000, 6000, 2560, 2048 * 1365);
+        assert!(full > GB && full < 4 * GB, "{full}");
+        assert!(small < full / 4, "{small} vs {full}");
+        assert_eq!(work_bytes(0, 0, 2560, 0), 0);
+        assert_eq!(work_bytes(usize::MAX, usize::MAX, 2560, usize::MAX), usize::MAX, "saturates");
+    }
+
+    #[test]
+    fn a_worker_that_panics_fails_its_photo_only() {
+        std::thread::scope(|s| {
+            let h = s.spawn(|| -> Result<Exported, String> { panic!("boom") });
+            let err = Pending::Running(h).wait().err().unwrap_or_default();
+            assert!(err.contains("boom"), "{err}");
+        });
     }
 }

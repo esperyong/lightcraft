@@ -371,3 +371,21 @@ fn modern_requests_receive_result_and_cache_fields() {
     }
     assert!(rpc(&mut s, 2, "tools/list", json!({}))["result"].get("resultType").is_none());
 }
+
+/// PR #5 test run on a Mac: the CLI imported 86 photos of the CC0 corpus where the app imported 87, because folder
+/// expansion used a stale copy of the app's extension list (no `nrw`, no `heic`).
+#[test]
+fn folders_expand_to_every_file_the_app_imports() {
+    assert_eq!(crate::PHOTO_EXTENSIONS, lightcraft_engine::import::EXTENSIONS);
+    let dir = std::env::temp_dir().join(format!("lc-mcp-expand-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    for name in ["a.NRW", "b.heic", "sub/c.dng", "notes.txt"] {
+        std::fs::write(dir.join(name), b"x").unwrap();
+    }
+    let files = crate::expand_paths(&[dir.to_string_lossy().to_string()]);
+    let mut names: Vec<_> = files.iter().filter_map(|f| std::path::Path::new(f).file_name()).map(|n| n.to_string_lossy().to_string()).collect();
+    names.sort();
+    assert_eq!(names, ["a.NRW", "b.heic", "c.dng"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

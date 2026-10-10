@@ -261,6 +261,18 @@ fn main() {
                 session.media.forget(id); // as in a batch: every original is decoded once
             }
         });
+        // the same through `run_batch`, several photos at once (issue #1; LIGHTCRAFT_EXPORT_THREADS sets how many)
+        use lightcraft_engine::export::{Destination, batch_jobs, prepare_batch, run_batch};
+        let jobs = batch_jobs(&prepare_batch(&mut session, &ids, &o).expect("prepare"));
+        row(&format!("  same, {jobs} at once (run_batch):"), &mut |g| {
+            lightcraft_engine::gpu::set_enabled(g);
+            let batch = prepare_batch(&mut session, &ids, &o).expect("prepare");
+            let mut write = |_: &str, _: &[u8]| Ok(());
+            drop(run_batch(batch, &o, &Destination::default(), &mut write, &|_| false, true, &mut |_, _| true).expect("export"));
+            for &id in &ids {
+                session.media.forget(id);
+            }
+        });
         lightcraft_engine::gpu::set_enabled(true);
         return;
     }

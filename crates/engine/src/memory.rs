@@ -160,7 +160,7 @@ pub fn cache_share(budget: usize) -> usize {
 }
 
 /// The memory a batch export may fill with photos rendered side by side
-/// ([`crate::export::batch_jobs`]): half the machine's RAM less the budget (what the caches and
+/// ([`crate::export::batch_plan`]): half the machine's RAM less the budget (what the caches and
 /// other decodes may hold meanwhile), at least the budget; twice the budget when the RAM is unknown;
 /// and never more than is available now ([`available_ram`], Linux).
 pub fn export_room() -> usize {

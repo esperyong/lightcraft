@@ -233,9 +233,9 @@ photo, suppressing its response. Unknown/completed request ids are ignored. Phot
 being processed finish first and are dropped unwritten: completed photos remain, each written
 with the existing atomic file writer, and there are no partial files to delete.
 
-A batch renders several photos at once on worker threads (half the cores, at most four, and only
-as many as fit in memory side by side; `LIGHTCRAFT_EXPORT_THREADS=N` sets the number, 1 = one at a
-time). Files are still named and written in the batch's order, so the output is the same either
+A batch renders several photos at once on worker threads (up to half the cores, at most four; each
+photo starts once its estimated memory fits beside those in flight, so a very large one runs alone
+and the rest go on side by side; `LIGHTCRAFT_EXPORT_THREADS=N` sets the number, 1 = one at a time). Files are still named and written in the batch's order, so the output is the same either
 way; progress counts the photos written. Unrelated outputs and earlier exports
 are untouched. A failed export is an `isError` tool result. Transport mutexes recover poisoning.
 

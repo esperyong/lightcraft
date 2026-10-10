@@ -3,7 +3,7 @@
 use serde_json::json;
 
 use crate::Session;
-use crate::export::{ExportFormat, ExportOptions, export_photo};
+use crate::export::{BatchPlan, ExportFormat, ExportOptions, export_photo};
 use crate::tests_xmp::{synthetic_dng_with, temp_dir};
 
 #[test]
@@ -374,7 +374,7 @@ fn exports_are_atomic_without_a_sync() {
 /// A fake file system for batch tests: what is written (path, bytes), and paths taken beforehand.
 fn run_fake(
     items: Vec<crate::export::PreparedExport>,
-    jobs: usize,
+    plan: BatchPlan,
     o: &ExportOptions,
     existing: &[&str],
     stop_on_error: bool,
@@ -385,7 +385,7 @@ fn run_fake(
         Ok(())
     };
     let to = crate::export::Destination { dir: "out".into(), exact: None };
-    let r = crate::export::run_batch_with(items, jobs, o, &to, &mut write, &|p| existing.contains(&p), stop_on_error, &mut |_, _| true);
+    let r = crate::export::run_batch_with(items, plan, o, &to, &mut write, &|p| existing.contains(&p), stop_on_error, &mut |_, _| true);
     (r, written)
 }
 
@@ -400,11 +400,17 @@ fn a_parallel_batch_writes_what_one_at_a_time_writes() {
     s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.6})).unwrap();
     for (naming, existing) in [("{name}", &[][..]), ("Same", &["out/Same.png"][..])] {
         let o = ExportOptions::from_json(&json!({"format": "png", "width": 40, "naming": naming}));
-        let (one, one_files) = run_fake(crate::export::prepare_batch(&mut s, &ids, &o).unwrap(), 1, &o, existing, true);
-        let (many, many_files) = run_fake(crate::export::prepare_batch(&mut s, &ids, &o).unwrap(), 4, &o, existing, true);
-        assert_eq!(one.unwrap(), many.unwrap());
+        let (one, one_files) = run_fake(crate::export::prepare_batch(&mut s, &ids, &o).unwrap(), BatchPlan::jobs(1), &o, existing, true);
+        let (many, many_files) = run_fake(crate::export::prepare_batch(&mut s, &ids, &o).unwrap(), BatchPlan::jobs(4), &o, existing, true);
+        // no room beside the first photo in flight: on worker threads, but one at a time
+        let (tight, tight_files) =
+            run_fake(crate::export::prepare_batch(&mut s, &ids, &o).unwrap(), BatchPlan { jobs: 4, room: 1 }, &o, existing, true);
+        let one = one.unwrap();
+        assert_eq!(one, many.unwrap());
+        assert_eq!(one, tight.unwrap());
         assert_eq!(one_files.len(), 6);
         assert_eq!(one_files, many_files, "same paths, same bytes, same order");
+        assert_eq!(one_files, tight_files);
         if naming == "Same" {
             let paths: Vec<_> = many_files.iter().map(|f| f.0.as_str()).collect();
             assert_eq!(paths, ["out/Same-2.png", "out/Same-3.png", "out/Same-4.png", "out/Same-5.png", "out/Same-6.png", "out/Same-7.png"]);
@@ -433,7 +439,7 @@ fn a_parallel_batch_reports_failures_in_order_and_stops_when_cancelled() {
     // the original + its edits: the file is read when the photo's turn comes
     let o = ExportOptions::from_json(&json!({"format": "original"}));
 
-    let (r, written) = run_fake(crate::export::prepare_batch(&mut s, &ids, &o).unwrap(), 3, &o, &[], false);
+    let (r, written) = run_fake(crate::export::prepare_batch(&mut s, &ids, &o).unwrap(), BatchPlan::jobs(3), &o, &[], false);
     let r = r.unwrap();
     assert_eq!(r.len(), 5);
     assert!(r[2]["error"].as_str().is_some_and(|e| e.contains("Shot2.dng")), "{r:?}");
@@ -446,7 +452,7 @@ fn a_parallel_batch_reports_failures_in_order_and_stops_when_cancelled() {
         ["out/Shot0.dng", "out/Shot0.xmp", "out/Shot1.dng", "out/Shot1.xmp", "out/Shot3.dng", "out/Shot3.xmp", "out/Shot4.dng", "out/Shot4.xmp"]
     );
 
-    let (r, written) = run_fake(crate::export::prepare_batch(&mut s, &ids, &o).unwrap(), 3, &o, &[], true);
+    let (r, written) = run_fake(crate::export::prepare_batch(&mut s, &ids, &o).unwrap(), BatchPlan::jobs(3), &o, &[], true);
     assert!(r.unwrap_err().contains("Shot2.dng"));
     assert_eq!(written.len(), 4, "the two photos before the failed one");
 
@@ -459,7 +465,7 @@ fn a_parallel_batch_reports_failures_in_order_and_stops_when_cancelled() {
     };
     let mut asked = Vec::new();
     let to = crate::export::Destination { dir: "out".into(), exact: None };
-    let r = crate::export::run_batch_with(items, 3, &o, &to, &mut write, &|_| false, false, &mut |done, name| {
+    let r = crate::export::run_batch_with(items, BatchPlan::jobs(3), &o, &to, &mut write, &|_| false, false, &mut |done, name| {
         asked.push((done, name.to_string()));
         done < 2
     })

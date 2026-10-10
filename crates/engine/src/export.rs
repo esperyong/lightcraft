@@ -1324,8 +1324,8 @@ pub struct PreparedExport {
     work: Work,
     /// The library's originals, which [`run_batch`] never writes over (shared by a batch).
     guard: std::sync::Arc<crate::originals::OriginalGuard>,
-    /// Roughly the most memory [`PreparedExport::run`] holds at once ([`work_bytes`]): how many
-    /// photos of a batch fit in memory side by side ([`batch_jobs`]).
+    /// Roughly the most memory [`PreparedExport::run`] holds at once ([`work_bytes`]): whether it
+    /// fits beside the photos of a batch already in flight ([`BatchPlan`]).
     work_bytes: usize,
 }
 
@@ -1531,9 +1531,10 @@ fn sidecar_path(main: &str, ext: &str) -> String {
 /// taken. A path that is a catalogued original (or its sidecar) is refused whatever the policy.
 ///
 /// Several photos are read, decoded, rendered and encoded at once on worker threads
-/// ([`batch_jobs`]: by the cores and the memory each photo needs; `LIGHTCRAFT_EXPORT_THREADS`
-/// overrides it, 1 = one at a time), while naming and writing stay on the calling thread in the
-/// batch's order, so the files and results are the same as one at a time.
+/// ([`batch_plan`]: up to half the cores, each photo starting once its estimated memory fits beside
+/// the photos in flight, so a huge one runs alone without holding back the rest;
+/// `LIGHTCRAFT_EXPORT_THREADS` overrides it, 1 = one at a time), while naming and writing stay on
+/// the calling thread in the batch's order, so the files and results are the same as one at a time.
 /// `progress(done, next file)` is called before each photo's result is awaited, `done` photos
 /// being finished; returning false cancels the rest (photos already being rendered then finish
 /// and are dropped). Returns one JSON object per photo: `{path, width, height, bytes, sidecars}`,
@@ -1547,17 +1548,17 @@ pub fn run_batch(
     stop_on_error: bool,
     progress: &mut dyn FnMut(usize, &str) -> bool,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let jobs = batch_jobs(&items);
+    let plan = batch_plan(&items);
     if items.len() > 1 {
-        log::debug!("export: {} photos, {jobs} at once", items.len());
+        log::debug!("export: {} photos, up to {} at once in {} MB", items.len(), plan.jobs, plan.room >> 20);
     }
-    run_batch_with(items, jobs, o, to, write, exists, stop_on_error, progress)
+    run_batch_with(items, plan, o, to, write, exists, stop_on_error, progress)
 }
 
-/// [`run_batch`] with `jobs` photos in flight at once (1: one after the other, on this thread).
+/// [`run_batch`] with photos in flight as `plan` allows (one job: one after the other, on this thread).
 pub(crate) fn run_batch_with(
     items: Vec<PreparedExport>,
-    jobs: usize,
+    plan: BatchPlan,
     o: &ExportOptions,
     to: &Destination,
     write: &mut dyn FnMut(&str, &[u8]) -> Result<(), String>,
@@ -1566,7 +1567,7 @@ pub(crate) fn run_batch_with(
     progress: &mut dyn FnMut(usize, &str) -> bool,
 ) -> Result<Vec<serde_json::Value>, String> {
     let mut sink = Sink::new(o, to, items.len() == 1, write, exists, stop_on_error);
-    if jobs <= 1 {
+    if plan.jobs <= 1 {
         for (i, item) in items.into_iter().enumerate() {
             if !progress(i, &item.file_name) {
                 break;
@@ -1578,27 +1579,32 @@ pub(crate) fn run_batch_with(
     }
     let heads: Vec<_> = items.iter().map(|i| (i.photo, i.file_name.clone(), i.guard.clone())).collect();
     std::thread::scope(|s| {
-        let mut todo = items.into_iter();
+        let mut todo = items.into_iter().peekable();
         let mut running = std::collections::VecDeque::new();
+        let mut held = 0usize;
         let mut outcome = Ok(());
         for (i, (photo, name, guard)) in heads.into_iter().enumerate() {
             if !progress(i, &name) {
                 break;
             }
-            // keep `jobs` photos in flight; they start in order, so photo i is the oldest
-            while running.len() < jobs
-                && let Some(item) = todo.next()
+            // start photos in order while the plan admits them; photo i is then the oldest in flight
+            while let Some(next) = todo.peek()
+                && plan.admits(running.len(), held, next.work_bytes)
             {
-                running.push_back(start_export(s, item));
+                let Some(item) = todo.next() else { break };
+                held = held.saturating_add(item.work_bytes);
+                running.push_back((item.work_bytes, start_export(s, item)));
             }
-            let Some(job) = running.pop_front() else { break };
-            if let Err(e) = sink.take(photo, name, &guard, job.wait()) {
+            let Some((bytes, job)) = running.pop_front() else { break };
+            let r = job.wait();
+            held = held.saturating_sub(bytes);
+            if let Err(e) = sink.take(photo, name, &guard, r) {
                 outcome = Err(e);
                 break;
             }
         }
         // after a cancel or an error: let the photos still in flight end, and drop them
-        for job in running {
+        for (_, job) in running {
             let _ = job.wait();
         }
         outcome
@@ -1606,32 +1612,53 @@ pub(crate) fn run_batch_with(
     Ok(sink.out)
 }
 
-/// How many photos of `items` [`run_batch`] works on at once: half the cores (each photo's
-/// decode, render and encode already spread over all of them; a second one fills their serial
-/// parts and the GPU's idle time), at most [`MAX_JOBS`], and no more than fit side by side in
-/// [`crate::memory::export_room`] at the largest photo's [`work_bytes`]. `LIGHTCRAFT_EXPORT_THREADS`
-/// sets the number instead. One on wasm32 (no threads).
-pub fn batch_jobs(items: &[PreparedExport]) -> usize {
+/// How many photos [`run_batch`] may have in flight at once, and the memory they may hold together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BatchPlan {
+    /// Photos in flight at most.
+    pub jobs: usize,
+    /// Bytes the photos in flight may need together, by their [`work_bytes`] estimates.
+    pub room: usize,
+}
+
+impl BatchPlan {
+    /// `jobs` photos at once, whatever they need.
+    pub fn jobs(jobs: usize) -> BatchPlan {
+        BatchPlan { jobs, room: usize::MAX }
+    }
+
+    /// May a photo needing `bytes` start beside `running` photos holding `held` bytes? Always when
+    /// none is running (however big it is), else while within both the jobs and the room: one
+    /// huge photo runs alone and the batch goes on side by side after it.
+    fn admits(&self, running: usize, held: usize, bytes: usize) -> bool {
+        running == 0 || (running < self.jobs && held.saturating_add(bytes) <= self.room)
+    }
+}
+
+/// How [`run_batch`] works through `items`: up to half the cores at once (each photo's decode,
+/// render and encode already spread over all of them; another one fills their serial parts and the
+/// GPU's idle time), at most [`MAX_JOBS`], within [`crate::memory::export_room`].
+/// `LIGHTCRAFT_EXPORT_THREADS` sets the number instead, and then memory isn't counted. One at a time
+/// on wasm32 (no threads).
+pub fn batch_plan(items: &[PreparedExport]) -> BatchPlan {
     if cfg!(target_arch = "wasm32") || items.len() < 2 {
-        return 1;
+        return BatchPlan::jobs(1);
     }
     let asked = std::env::var("LIGHTCRAFT_EXPORT_THREADS").ok().and_then(|v| v.trim().parse::<usize>().ok());
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let heaviest = items.iter().map(|i| i.work_bytes).max().unwrap_or(0);
-    pick_jobs(items.len(), asked, cores, crate::memory::export_room(), heaviest)
+    plan_for(items.len(), asked, cores, crate::memory::export_room())
 }
 
-/// [`batch_jobs`] for `photos` photos, the largest needing `heaviest` bytes, on `cores` cores with
-/// `room` bytes to fill; `asked` (above 0) wins over cores and memory.
-fn pick_jobs(photos: usize, asked: Option<usize>, cores: usize, room: usize, heaviest: usize) -> usize {
-    let jobs = match asked.filter(|n| *n > 0) {
-        Some(n) => n.min(64),
-        None => (cores / 2).clamp(1, MAX_JOBS).min((room / heaviest.max(1)).max(1)),
-    };
-    jobs.min(photos).max(1)
+/// [`batch_plan`] for `photos` photos on `cores` cores with `room` bytes to fill; `asked` (above
+/// 0) wins over cores and memory.
+fn plan_for(photos: usize, asked: Option<usize>, cores: usize, room: usize) -> BatchPlan {
+    match asked.filter(|n| *n > 0) {
+        Some(n) => BatchPlan::jobs(n.min(64).min(photos).max(1)),
+        None => BatchPlan { jobs: (cores / 2).clamp(1, MAX_JOBS).min(photos).max(1), room },
+    }
 }
 
-/// The most photos [`batch_jobs`] picks by itself.
+/// The most photos [`batch_plan`] has in flight by itself.
 pub const MAX_JOBS: usize = 4;
 
 /// A photo of a batch being exported: done on this thread, or running on a worker.
@@ -2420,23 +2447,29 @@ mod tests {
     }
 
     #[test]
-    fn batch_jobs_follow_the_cores_and_the_memory() {
+    fn batch_plans_follow_the_cores_and_the_memory() {
         const GB: usize = 1 << 30;
         // half the cores, at most MAX_JOBS, never more than there are photos
-        assert_eq!(pick_jobs(100, None, 4, 64 * GB, GB), 2);
-        assert_eq!(pick_jobs(100, None, 14, 64 * GB, GB), MAX_JOBS);
-        assert_eq!(pick_jobs(3, None, 32, 64 * GB, GB), 3);
-        assert_eq!(pick_jobs(1, None, 32, 64 * GB, GB), 1);
-        assert_eq!(pick_jobs(100, None, 1, 64 * GB, GB), 1);
-        // as many as fit in the room, and always one even when one doesn't
-        assert_eq!(pick_jobs(100, None, 14, 3 * GB, GB), 3);
-        assert_eq!(pick_jobs(100, None, 14, GB / 2, GB), 1);
-        assert_eq!(pick_jobs(100, None, 14, 0, 0), 1);
+        assert_eq!(plan_for(100, None, 4, 64 * GB), BatchPlan { jobs: 2, room: 64 * GB });
+        assert_eq!(plan_for(100, None, 14, 64 * GB).jobs, MAX_JOBS);
+        assert_eq!(plan_for(3, None, 32, 64 * GB).jobs, 3);
+        assert_eq!(plan_for(1, None, 32, 64 * GB).jobs, 1);
+        assert_eq!(plan_for(100, None, 1, 64 * GB).jobs, 1);
         // asked for: wins over cores and memory (bounded), 0 means "pick"
-        assert_eq!(pick_jobs(100, Some(6), 2, GB / 2, GB), 6);
-        assert_eq!(pick_jobs(100, Some(1000), 2, 0, GB), 64);
-        assert_eq!(pick_jobs(5, Some(8), 2, 0, GB), 5);
-        assert_eq!(pick_jobs(100, Some(0), 4, 64 * GB, GB), 2);
+        assert_eq!(plan_for(100, Some(6), 2, GB / 2), BatchPlan::jobs(6));
+        assert_eq!(plan_for(100, Some(1000), 2, 0).jobs, 64);
+        assert_eq!(plan_for(5, Some(8), 2, 0).jobs, 5);
+        assert_eq!(plan_for(100, Some(0), 4, 64 * GB).jobs, 2);
+
+        // photos start while they fit beside those in flight (issue #5 on an M5: one 102 MP photo in
+        // the batch must not make all of it one at a time)
+        let plan = BatchPlan { jobs: 4, room: 8 * GB };
+        assert!(plan.admits(0, 0, 9 * GB), "one always runs, however big");
+        assert!(!plan.admits(1, 9 * GB, 2 * GB), "nothing beside the huge one");
+        assert!(plan.admits(1, 2 * GB, 2 * GB) && plan.admits(3, 6 * GB, 2 * GB));
+        assert!(!plan.admits(3, 6 * GB, 3 * GB), "past the room");
+        assert!(!plan.admits(4, 0, 0), "past the jobs");
+        assert!(BatchPlan::jobs(2).admits(1, usize::MAX, usize::MAX), "an asked-for number ignores memory");
         // a 24 MP raw at full size needs about 2 GB, an export at 2048 px from the preview level far less
         let full = work_bytes(6000 * 4000, 6000, usize::MAX, 6000 * 4000);
         let small = work_bytes(6000 * 4000, 6000, 2560, 2048 * 1365);

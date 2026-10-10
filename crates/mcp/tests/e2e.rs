@@ -213,14 +213,15 @@ fn export_progress_and_cancel() {
     let mut request = call(4, "command_run", json!({"id":"app.export","params":{"ids":ids,"dir":out,"longEdge":1200,"format":"png"}}));
     request["params"]["_meta"] = json!({"progressToken":44});
     writeln!(send, "{request}").unwrap();
-    loop {
-        let value = next();
-        assert_ne!(value["id"], 4, "must be cancellable before completion: {value}");
-        assert_eq!(value["params"]["progressToken"], 44, "{value}");
-        if value["params"]["progress"].as_f64().unwrap() > 0.0 {
-            break;
-        }
-    }
+    // Cancel as soon as the export reports it has begun (progress 0, sent at the first photo
+    // boundary). The cancel is read at the next boundary, so the first photo is always written and
+    // the rest stop — however fast the batch is. (Waiting for a later report raced a fast machine:
+    // reports come at most every 100 ms, and with photos exported side by side an M5 finished all
+    // eight within that, issue #5.)
+    let value = next();
+    assert_ne!(value["id"], 4, "must be cancellable before completion: {value}");
+    assert_eq!(value["params"]["progressToken"], 44, "{value}");
+    assert_eq!(value["params"]["progress"], 0, "{value}");
     writeln!(send, "{}", json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":4}})).unwrap();
     writeln!(send, "{}", call(5, "doc_inspect", json!({}))).unwrap();
     loop {

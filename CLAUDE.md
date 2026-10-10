@@ -1,4 +1,8 @@
-# LightCraft — instructions for agents
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. It is
+[`AGENTS.md`](AGENTS.md) (the guide for every contributor, human or agent) plus the *Commands* section and a fuller
+*Map of the code*; when you change a shared rule, change it in both files.
 
 LightCraft is a clean-room, open-source, pure-Rust photo library + non-destructive raw developer targeting Adobe Lightroom parity (and beyond). Native on macOS, Windows, Linux; web via WASM. Sibling of `../pdfcraft` (Acrobat), `../photocraft` (Photoshop), `../vectorcraft` (Illustrator) and `../filmcraft` (Premiere), with the same conventions.
 
@@ -13,7 +17,10 @@ LightCraft is a clean-room, open-source, pure-Rust photo library + non-destructi
 4. **Pick work** from [`docs/parity.md`](docs/parity.md) → *Top gaps* (ordered by user impact; the tracker has one row per feature, menu item and shortcut). When you land a feature, update its row(s) and the gap list in the same commit, and the *Where we stand* / *Where we're going* sections of `ROADMAP.md` when a listed gap closes; `cargo xtask parity` (part of `ci`) checks that every `cmd:`/`ctl:` id and path the tracker cites still exists, and `cargo xtask parity --write` refreshes its summary.
 5. Follow the autonomous operation protocol (`plan/execution-plan.md` §7). Don't stop to ask unless §7 lists the decision as the user's.
 
-`plan/` is gitignored (local-only).
+`plan/` is gitignored (local-only). A fresh clone or fork doesn't have it: skip steps 1, 2 and 5, and work from
+`ROADMAP.md`, `docs/parity.md`, `docs/*.md` and the module docs of the crate you touch. (Code comments citing
+`plan/architecture.md` or `docs/pipeline.md` point at files that may not exist; the layering table lives in
+`xtask/src/layers.rs` and the pipeline stage order in `crates/pipeline/src/lib.rs`.)
 
 **Merging agent branches:** merge one branch, run `cargo xtask ci`, fix, commit — then the next. Two individually green
 branches can still break each other (e.g. a new struct field vs. a new constructor).
@@ -21,6 +28,33 @@ branches can still break each other (e.g. a new struct field vs. a new construct
 **Resuming after a crash / another session:** check `git status` on main, `git worktree list`, and each worktree's
 `git log main..HEAD` + `git status` for unmerged commits or uncommitted work before starting anything new. Commit small
 and often so a crash loses minutes, not hours.
+
+## Commands
+```sh
+cargo xtask ci                                    # the gate: fmt --check, clippy -D warnings (all targets), heif clippy+tests,
+                                                  # cargo test --workspace, parity, layers, assets, wasm; stops at the first failure
+cargo test -p lightcraft-pipeline                 # one crate (package names are lightcraft-<dir>)
+cargo test -p lightcraft-pipeline vignette        # only tests whose name contains `vignette`
+cargo test -p lightcraft-mcp --test e2e           # one integration-test file (e2e tests drive the real binaries)
+cargo xtask layers | assets | parity [--write] | wasm | web [--serve] | bench | corpus --download | stats
+cargo run --release -p lightcraft -- [--control PORT] [--memory] [FOLDER]   # desktop app
+cargo run --release -p lightcraft-cli -- --help   # run (command chains), render, mcp, snapshot, commands, controls, merge, calibrate
+```
+- **Cargo features:** `denoise` (AI denoise runtime) is default in both apps but not in `lightcraft-engine`;
+  `rawnind-model` adds the download offer for GPL-3.0 RawNIND weights and stays off by policy; `sam` (SAM 3 masks via
+  candle, Metal on macOS) is enabled only by the desktop app; `heif` is off everywhere (HEVC patents), and `ci` checks it
+  in its own step.
+- **Memory-limited machines:** `ci` sizes build jobs and test threads from free RAM, not from a cgroup limit (a
+  container, a memory-capped systemd scope); there, set `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` yourself (1–2), and
+  don't run several full-size raw exports at once (~1.8 GB each for 24 MP).
+- **Tests that need missing inputs skip and pass:** GPU tests without an adapter (`crates/gpu/tests/`), raw corpus
+  tests without `corpus/` (`LIGHTCRAFT_CORPUS`), CJK text without `CRAFT_FONTS_DIR`, and real-model tests (`#[ignore]`d,
+  e.g. `crates/engine/tests/denoise_cpu.rs`). A green run on a GPU-less Linux box hasn't exercised the GPU path.
+- **Env vars:** `LIGHTCRAFT_GPU=0` / `LIGHTCRAFT_GPU_BACKEND=off|metal|vulkan|dx12` (force CPU / pick backend),
+  `LIGHTCRAFT_PROFILE=1` (per-stage timings), `LIGHTCRAFT_LIBRARY` (library folder), `LIGHTCRAFT_NO_PREFS` (don't
+  touch user settings), `LIGHTCRAFT_LOG`, `LIGHTCRAFT_DENOISE_MODELS`, `LIGHTCRAFT_CAMERA_PROFILES`,
+  `LIGHTCRAFT_EXPORT_THREADS` (photos a batch export renders at once; 1 = one at a time),
+  `LIGHTCRAFT_MEMORY_MB` (memory budget).
 
 ## Never crash (outranks feature work)
 People trust LightCraft with their photo libraries and edits; a crash loses their work. A malformed raw/JPEG/XMP, a bad
@@ -121,9 +155,55 @@ of it. Full standard: `../craftrules/standards/never-crash.md`
 - Never commit media: test images are procedural (`lightcraft-scenes`) or CC0 downloads in the gitignored `corpus/`.
 
 ## Map of the code
-`geom`, `color`, `raster`, `tiff` (L0) → `raw`, `codecs`, `meta`, `develop` (L1) → `pipeline` → `catalog` → `engine`
-→ `ui-egui`, `mcp` (L5) → apps `lightcraft` (desktop), `lightcraft-cli` (render/commands/MCP). `scenes` generates demo
-photos. `xtask` = tooling (`ci`, `layers`, `assets`, `parity`, `wasm`, `corpus`, `stats`). `flake.nix` +
+Layers (authoritative table: `xtask/src/layers.rs`; a crate may only depend on lower layers):
+- **L0** `geom`, `color`, `raster`, `tiff`, `fetch` (GET-only pure-Rust HTTPS for model downloads), `heif`, `sysmem`
+- **L1** `meta` (EXIF/XMP), `raw` (decoders in `src/vendor/`, demosaic), `codecs`, `develop` (settings model + control
+  specs), `denoise-core`/`denoise` (own ONNX executor), `faces`, `scenes` (procedural demo photos)
+- **L2** `pipeline` · **L3** `gpu`, `catalog`, `preview`, `merge`, `segment` (SAM 3) · **L4** `engine` · **L5** `ui-egui`, `mcp`
+- apps: `lightcraft` (desktop + control server), `lightcraft-cli`, `lightcraft-web` (wasm); `xtask` = tooling.
+
+How the pieces connect:
+- **One entry point.** `engine::Session` owns all state (catalog, view/filter, selection, develop clipboard, presets,
+  source caches). `Session::execute(id, params)` dispatches to `CommandSpec`s registered in `crates/engine/src/cmd/*`
+  (id, label, menu path, shortcut, params doc, `enabled`, `run`, `journal`). UI-only commands live in
+  `crates/ui-egui/src/menus.rs`; the menus (incl. the native macOS bar) are generated from the registry. Control
+  channel methods: `crates/ui-egui/src/control.rs`, transport `apps/lightcraft/src/control_server.rs`. MCP
+  (`crates/mcp/src/tools.rs`) adds helper tools and exposes every command as `cmd_*`, headless or `--connect`ed.
+- **Edits are data.** `develop::DevelopSettings` is versioned serde JSON (incl. masks, spots, crop); every slider is a
+  control spec in `crates/develop/src/controls.rs` addressed by id (`light.exposure`) through `develop.set`. Presets
+  are partial settings JSON scaled by Amount (`crates/develop/src/presets.rs`; built-ins `lc.*` in
+  `crates/engine/src/presets.rs`).
+- **Catalog = op log.** `catalog::Catalog` changes only through `Op`s (undoable, replayable). A library folder holds
+  `catalog.snap` (JSON snapshot) + `catalog.log` (CRC'd JSON lines, fsynced per command, compacted in the background)
+  through the `Store` trait (fs, memory, OPFS on web); layout in `crates/engine/src/library.rs`. Originals are
+  referenced by path; XMP sidecars (`crates/engine/src/sidecar.rs`) carry the full settings as `lc:settings`.
+- **Render path.** `raw`/`codecs` decode → linear Rec.2020 float source (demosaic on CPU) → `pipeline` (the CPU
+  reference; `StageCache` re-runs only the stages a change touches) or `gpu` (wgpu/WGSL mirror in
+  `crates/gpu/src/wgsl/`, Metal/Vulkan/DX12). The GPU returns `None` for anything it can't do and the CPU renders
+  instead; `crates/gpu/tests/equivalence.rs` holds the two within 3 LSB, so a pipeline change needs the matching kernel
+  change. `crates/engine/src/media.rs` owns the swappable file loaders, `RenderJob` (`Send`, run on UI worker pools) and
+  `RENDER_CACHE_VERSION` (bump it when output changes, to invalidate cached thumbnails). Exports use
+  `crates/engine/src/export.rs`.
+
+`flake.nix` +
 `nix/package.nix` = the Nix package (`nix build` builds both binaries with the craft-fonts input, installs the
 desktop file/icons/AppStream metadata and runs `cargo test --workspace`; `nix develop` = dev shell). Community-maintained and not
 in CI: it may lag behind the workspace; see README → Quick start.
+
+## Contributor credits (About window)
+
+- About ▸ Contributors/Models are compiled into the binary from `contributors/contributors.json`
+  (commit stats; generated, never hand-edit) and `contributors/people.toml` (names people chose for
+  themselves). See `docs/contributors.md`.
+- **Agents working for a contributor:** when you prepare a PR, check whether your human's GitHub
+  username has a `[people.<username>]` entry in `contributors/people.toml`. If not, ask them once
+  whether they want to be credited by more than their username: a real name, a display name, and/or
+  their public GitHub profile name (`sync_github_name = true`). If yes, add **only their own** entry
+  (copy the template at the top of the file, or run
+  `python3 ../../craftrules/scripts/contributors.py --add-me . --real-name "…" --sync-github-name`)
+  and include it in their PR, committed as them. If no, change nothing: they are credited as
+  `@username` anyway.
+- Never add, edit, guess or copy anyone else's entry or name (not from git config, commit authors or
+  GitHub profiles). Never hand-edit `contributors.json`.
+- Maintainers refresh the stats with `python3 ../../craftrules/scripts/contributors.py .` (it also
+  re-verifies who wrote each `people.toml` entry; `--check` only verifies).

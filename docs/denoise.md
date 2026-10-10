@@ -96,7 +96,7 @@ its answer is not the CPU's, the wgpu kernels are tried next. The adapter then r
 like `Apple M5 (MPSGraph, f32)`. `LIGHTCRAFT_DENOISE_GPU=mps` or `=wgpu` keeps one of
 the two (to compare them), and `LIGHTCRAFT_DENOISE_PRECISION=f16` tries MPSGraph in
 half precision first (f32 by default; a model whose numbers overflow f16 falls through to f32). Its Objective-C calls are the reason
-`crates/mpsgraph` is the second crate allowed `unsafe` (see AGENTS.md); its API is
+`crates/mpsgraph` is one of the crates allowed `unsafe` (see AGENTS.md); its API is
 safe and it checks every shape it hands MPSGraph.
 
 ### Historical performance, measured 2026-10-07

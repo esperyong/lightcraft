@@ -148,6 +148,8 @@ pub struct AiState {
     progress: AiProgress,
     /// Photos stored since the last command asked (each `ai.analyze` reports its own).
     finished: Vec<PhotoId>,
+    /// Select Subject / Background with Apple Vision (see [`crate::subject`]).
+    pub subject: crate::subject::SubjectState,
 }
 
 impl Default for AiState {
@@ -160,6 +162,7 @@ impl Default for AiState {
             worker: None,
             progress: AiProgress::default(),
             finished: Vec::new(),
+            subject: Default::default(),
         }
     }
 }

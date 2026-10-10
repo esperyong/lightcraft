@@ -576,8 +576,9 @@ impl Session {
     /// Apply finished background requests (to masks that haven't changed since) and collect
     /// their messages. Cheap when nothing is pending: call it every frame.
     pub fn segment_poll(&mut self) -> Polled {
-        #[cfg_attr(not(feature = "sam"), allow(unused_mut))]
         let mut polled = Polled { messages: std::mem::take(&mut self.segmenter.messages), ..Default::default() };
+        // Select Subject / Background with Apple Vision (no model of ours involved)
+        self.subject_poll(&mut polled);
         #[cfg(feature = "sam")]
         {
             // (before draining: a worker that is idle now has sent everything)

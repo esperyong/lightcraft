@@ -498,7 +498,8 @@ impl LightcraftApp {
             self.ai_error(ctx, e, None);
         }
         let seg = &self.session.segmenter;
-        if seg.busy() || seg.pending_clicks().is_some() {
+        // (Select Subject with Apple Vision answers through the same poll)
+        if seg.busy() || seg.pending_clicks().is_some() || self.session.ai.subject.busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
         let download = seg.download_status();

@@ -326,12 +326,12 @@ fn cases() -> Vec<(&'static str, Edit)> {
                     ..Default::default()
                 },
                 Mask {
-                    components: vec![MaskComponent { name: None, op: MaskOp::Intersect, invert: false, shape: MaskShape::Subject }],
+                    components: vec![MaskComponent { name: None, op: MaskOp::Intersect, invert: false, shape: MaskShape::Subject { seg: None } }],
                     adjust: lightcraft_develop::LocalAdjustments { exposure: 0.5, ..Default::default() },
                     ..Default::default()
                 },
                 Mask {
-                    components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: true, shape: MaskShape::Background }],
+                    components: vec![MaskComponent { name: None, op: MaskOp::Add, invert: true, shape: MaskShape::Background { seg: None } }],
                     adjust: lightcraft_develop::LocalAdjustments { saturation: -60.0, ..Default::default() },
                     invert: true,
                     ..Default::default()

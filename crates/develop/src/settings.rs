@@ -775,10 +775,18 @@ pub enum MaskShape {
         hi: f64,
         feather: f64,
     },
-    /// AI / automatic selections, evaluated by a segmenter.
-    Subject,
+    /// AI / automatic selections. `seg` is a segmentation computed for the shape when it was made (Apple Vision's
+    /// subject mask on a Mac; for `Background`, its inverse); without one the renderer estimates the selection (the
+    /// photo's own mattes, else a heuristic).
+    Subject {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seg: Option<crate::SegMask>,
+    },
     Sky,
-    Background,
+    Background {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seg: Option<crate::SegMask>,
+    },
     /// One object picked by clicks (SAM 3 point prompts): `hint` holds the clicks that include,
     /// `exclude` the ones that exclude; `seg` the segmentation computed from them.
     Object {

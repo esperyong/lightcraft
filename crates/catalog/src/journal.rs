@@ -46,7 +46,7 @@
 //! | 1 | up to v0.2.0 | |
 //! | 2 | after v0.2.0 | `Op::SetBrowsed`, `Catalog.browsed`, `Photo.local_baseline` |
 //! | 3 | albums by hand | `Op::SetAlbumOrder`, `Album.order` |
-//! | 4 | Apple Vision analysis | `Op::SetAi`, `Photo.ai` |
+//! | 4 | Apple Vision analysis | `Op::SetAi`, `Photo.ai`; a `seg` on Subject / Background mask shapes |
 //!
 //! Rules:
 //! - **Bump [`VERSION`]** (and add a row above) in the change that adds an [`Op`] variant or a

@@ -160,3 +160,95 @@ fn without_a_model_the_commands_say_why() {
         assert!(spec.menu.is_empty());
     }
 }
+
+/// A stand-in for Vision's subject: a disc in the middle of whatever picture it is given (or nothing).
+fn disc_finder(found: bool) -> crate::subject::SubjectFinder {
+    Arc::new(move |img: &lightcraft_raster::Rgba8| {
+        if !found {
+            return Ok(None);
+        }
+        let (w, h) = (img.width, img.height);
+        let r = w.min(h) as f32 * 0.25;
+        let alpha = (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f32 - w as f32 / 2.0, (i / w) as f32 - h as f32 / 2.0);
+                if (x * x + y * y).sqrt() < r { 1.0 } else { 0.0 }
+            })
+            .collect();
+        Ok(Some(lightcraft_vision::Matte { width: w, height: h, alpha }))
+    })
+}
+
+fn component_shape(s: &mut Session, mask: u64, comp: usize) -> lightcraft_develop::MaskShape {
+    let id = s.active().unwrap();
+    let d = s.develop_of(id).unwrap();
+    d.masks.iter().find(|m| u64::from(m.id) == mask).unwrap().components[comp].shape.clone()
+}
+
+/// The stored subject's coverage at a normalized point.
+fn coverage(shape: &lightcraft_develop::MaskShape, x: f64, y: f64) -> f32 {
+    use lightcraft_develop::MaskShape;
+    let (MaskShape::Subject { seg: Some(seg) } | MaskShape::Background { seg: Some(seg) }) = shape else { panic!("no segmentation: {shape:?}") };
+    let side = seg.side as usize;
+    let l = seg.logits().unwrap();
+    let (i, j) = (((x * side as f64) as usize).min(side - 1), ((y * side as f64) as usize).min(side - 1));
+    1.0 / (1.0 + (-l[j * side + i]).exp())
+}
+
+#[test]
+fn select_subject_stores_visions_subject_and_background_its_inverse() {
+    let mut s = Session::with_demo();
+    s.ai.subject.finder = Some(disc_finder(true));
+    let first = all(&s)[0];
+    s.execute("library.select", &json!({"ids": [first.0]})).unwrap();
+    let r = s.execute("mask.add", &json!({"kind": "subject"})).unwrap();
+    let mask = r["activeMask"].as_u64().unwrap();
+    let subject = component_shape(&mut s, mask, 0);
+    assert!(coverage(&subject, 0.5, 0.5) > 0.99 && coverage(&subject, 0.02, 0.02) < 0.01, "{subject:?}");
+    s.execute("mask.addComponent", &json!({"id": mask, "op": "subtract", "kind": "background"})).unwrap();
+    let background = component_shape(&mut s, mask, 1);
+    assert!(coverage(&background, 0.5, 0.5) < 0.01 && coverage(&background, 0.02, 0.02) > 0.99);
+    // it renders (the segmentation lives in normalized coordinates: any size)
+    for edge in [48, 160] {
+        let job = s.render_job(first, edge, edge, false, true).unwrap();
+        assert!(job.run().rendered.is_ok());
+    }
+    // no subject: the estimate, and a note saying so
+    s.ai.subject.finder = Some(disc_finder(false));
+    let r = s.execute("mask.add", &json!({"kind": "subject"})).unwrap();
+    assert!(r["note"].as_str().is_some_and(|n| n.contains("no subject")), "{r}");
+    let shape = component_shape(&mut s, r["activeMask"].as_u64().unwrap(), 0);
+    assert_eq!(shape, lightcraft_develop::MaskShape::Subject { seg: None });
+    // no finder (other systems): the estimate, silently
+    s.ai.subject.finder = None;
+    let r = s.execute("mask.add", &json!({"kind": "background"})).unwrap();
+    assert!(r.get("note").is_none() && r.get("pending").is_none(), "{r}");
+}
+
+#[test]
+fn in_the_app_the_subject_arrives_after_the_mask() {
+    let mut s = Session::with_demo();
+    s.segmenter.background = true;
+    s.ai.subject.finder = Some(disc_finder(true));
+    let first = all(&s)[0];
+    s.execute("library.select", &json!({"ids": [first.0]})).unwrap();
+    let r = s.execute("mask.add", &json!({"kind": "subject"})).unwrap();
+    assert_eq!(r["pending"], json!(true), "{r}");
+    let mask = r["activeMask"].as_u64().unwrap();
+    assert_eq!(component_shape(&mut s, mask, 0), lightcraft_develop::MaskShape::Subject { seg: None }, "the estimate first");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        let polled = s.segment_poll();
+        assert!(polled.messages.is_empty(), "{:?}", polled.messages);
+        if polled.changed {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the subject never arrived");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(coverage(&component_shape(&mut s, mask, 0), 0.5, 0.5) > 0.99);
+    assert!(!s.ai.subject.busy());
+    // one undo step brings the estimate back, another removes the mask
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(component_shape(&mut s, mask, 0), lightcraft_develop::MaskShape::Subject { seg: None });
+}

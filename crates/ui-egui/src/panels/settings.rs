@@ -377,7 +377,7 @@ fn raw_decoder_note(app: &LightcraftApp) -> &'static str {
     } else if raw.effective() == lightcraft_engine::apple_raw::Mode::Builtin && app.ui.settings.raw_decoder != RawDecoder::Builtin {
         "Apple's raw decoder was turned off for this session: its decodes kept taking too long."
     } else {
-        "Automatic develops the raws LightCraft can't decode yet (such as newer Canon CR3 and compressed Olympus ORF) with Apple's raw decoder; Apple develops every raw but DNG with it. For raws already imported as preview only, use Photo ▸ Reload from Disk."
+        "Automatic develops the raws LightCraft can't decode yet (such as compressed Olympus ORF and Nikon High Efficiency NEF) with Apple's raw decoder; Apple develops every raw but DNG with it. For raws already imported as preview only, use Photo ▸ Reload from Disk."
     }
 }
 

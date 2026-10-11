@@ -1745,6 +1745,6 @@
   "Apple's raw decoder needs macOS 12 or later.": "Apple の RAW デコーダーには macOS 12 以降が必要です。",
   "LIGHTCRAFT_RAW_DECODER overrides this setting.": "環境変数 LIGHTCRAFT_RAW_DECODER がこの設定より優先されます。",
   "Apple's raw decoder was turned off for this session: its decodes kept taking too long.": "Apple の RAW デコーダーはこのセッションではオフになりました：デコードが何度も時間切れになりました。",
-  "Automatic develops the raws LightCraft can't decode yet (such as newer Canon CR3 and compressed Olympus ORF) with Apple's raw decoder; Apple develops every raw but DNG with it. For raws already imported as preview only, use Photo ▸ Reload from Disk.": "「自動」は、LightCraft がまだデコードできない RAW（新しい Canon CR3 や圧縮 Olympus ORF など）を Apple の RAW デコーダーで現像します。「Apple」は DNG 以外のすべての RAW をこれで現像します。プレビューのみとして読み込み済みの RAW には「写真 → ディスクから再読み込み」を使ってください。",
+  "Automatic develops the raws LightCraft can't decode yet (such as compressed Olympus ORF and Nikon High Efficiency NEF) with Apple's raw decoder; Apple develops every raw but DNG with it. For raws already imported as preview only, use Photo ▸ Reload from Disk.": "「自動」は、LightCraft がまだデコードできない RAW（圧縮 Olympus ORF や Nikon の高効率 NEF など）を Apple の RAW デコーダーで現像します。「Apple」は DNG 以外のすべての RAW をこれで現像します。プレビューのみとして読み込み済みの RAW には「写真 → ディスクから再読み込み」を使ってください。",
   "Photo ▸ Reload from Disk develops it with Apple's raw decoder.": "「写真 → ディスクから再読み込み」で Apple の RAW デコーダーを使って現像します。"
 }

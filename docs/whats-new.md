@@ -3,7 +3,7 @@
 ## October 2026
 
 ### Apple's raw decoder on the Mac
-- On macOS 12+, raws LightCraft can't decode yet (newer Canon CR3 variants, compressed Olympus ORF…) develop with
+- On macOS 12+, raws LightCraft can't decode yet (compressed Olympus ORF, Nikon High Efficiency NEF…) develop with
   Apple's raw decoder instead of opening from their embedded JPEG. Settings ▸ Performance ▸ Raw decoder chooses
   Automatic (the default), Apple (every raw but DNG) or Built-in; agents use `app.rawDecoder`, scripts
   `LIGHTCRAFT_RAW_DECODER`. Raws already imported as preview only develop after Photo ▸ Reload from Disk (see

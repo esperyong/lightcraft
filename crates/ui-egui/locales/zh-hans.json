@@ -1750,6 +1750,6 @@
   "Apple's raw decoder needs macOS 12 or later.": "Apple 的 RAW 解码器需要 macOS 12 或更高版本。",
   "LIGHTCRAFT_RAW_DECODER overrides this setting.": "环境变量 LIGHTCRAFT_RAW_DECODER 优先于此设置。",
   "Apple's raw decoder was turned off for this session: its decodes kept taking too long.": "Apple 的 RAW 解码器在本次运行中已关闭：它的解码多次超时。",
-  "Automatic develops the raws LightCraft can't decode yet (such as newer Canon CR3 and compressed Olympus ORF) with Apple's raw decoder; Apple develops every raw but DNG with it. For raws already imported as preview only, use Photo ▸ Reload from Disk.": "“自动”用 Apple 的 RAW 解码器显影 LightCraft 还不能解码的 RAW（例如较新的佳能 CR3、压缩的奥林巴斯 ORF）；“Apple”用它显影除 DNG 以外的所有 RAW。已经以“仅预览”导入的 RAW，请使用“照片 → 从磁盘重新读取”。",
+  "Automatic develops the raws LightCraft can't decode yet (such as compressed Olympus ORF and Nikon High Efficiency NEF) with Apple's raw decoder; Apple develops every raw but DNG with it. For raws already imported as preview only, use Photo ▸ Reload from Disk.": "“自动”用 Apple 的 RAW 解码器显影 LightCraft 还不能解码的 RAW（例如压缩的奥林巴斯 ORF、尼康高效率 NEF）；“Apple”用它显影除 DNG 以外的所有 RAW。已经以“仅预览”导入的 RAW，请使用“照片 → 从磁盘重新读取”。",
   "Photo ▸ Reload from Disk develops it with Apple's raw decoder.": "“照片 → 从磁盘重新读取”会用 Apple 的 RAW 解码器显影它。"
 }

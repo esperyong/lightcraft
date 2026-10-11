@@ -2,13 +2,14 @@
 
 On macOS 12 and later LightCraft can develop raws with Apple's raw decoder, Core Image's `CIRAWFilter`. Apple keeps
 decoders for hundreds of cameras up to date with the system, so on a Mac the raws LightCraft's own decoders can't
-develop yet (compressed Olympus ORF and Samsung SRW, Nikon High Efficiency and "lossy after split" NEF, unverified
-Canon CRX variants…) develop instead of opening from their embedded JPEG. LightCraft's own decoders stay the default
-for everything they can develop, and the fallback for everything else. Elsewhere (and before macOS 12) nothing
-changes.
+develop yet develop instead of opening from their embedded JPEG, when Apple's decoder knows them: compressed Olympus
+ORF and Nikon High Efficiency NEF do (measured below); Samsung's compressed SRW (NX500) does not and stays a preview.
+LightCraft's own decoders stay the default for everything they can develop, and the fallback for everything else.
+Elsewhere (and before macOS 12) nothing changes.
 
-*Status (2026-10-11):* measured on an Apple M5 with macOS 26.6.2 (fork issue #2): see
-[Measured on a Mac](#measured-on-a-mac).
+*Status (2026-10-11):* measured on an Apple M5 with macOS 26.6.2 (fork issue #2), see
+[Measured on a Mac](#measured-on-a-mac); other raws only Apple develops (Nikon "lossy after split" NEF, unverified Canon
+CRX variants) are untested.
 
 ## Modes
 
@@ -123,16 +124,21 @@ LIGHTCRAFT_RAW_DECODER=builtin cargo run --release -p lightcraft-cli -- render F
 
 Apple M5 (10 cores, 32 GB), macOS 26.6.2 (`ciraw1:26.6.2`), 2026-10-11: `raw_decoders --timing --sweep` on CC0 raws
 from raw.pixls.us and a portrait ARW (33 MP, 7008 × 4672), plus the tests above, `lightcraft-cli render` in both modes
-and a headless import.
+and headless imports.
 
 - **What only Apple develops.** Compressed ORF (E-M1 Mark II, two files): the built-in decoder shows the embedded
-  3200 × 2400 JPEG; Apple develops all 5184 × 3888 pixels, and in `auto` they import as raws that develop (not
-  *preview only*). Every Canon CR3 tried develops with the built-in decoder, so `auto` leaves them to it: R6 RAW and
-  C-RAW, R8 (Apple develops these too, ΔE below), and on Linux R3, R5 Mark II RAW and C-RAW, R6 Mark III, R7, R10,
-  R50 V, R100 and M50 Mark II.
-- **Linear, unclipped, upright.** At matched exposure Apple's tone response is within 0.94–1.17 of the built-in
-  decoder's from 10 stops below white to white (the A7 III: 0.875 one stop below white). Highlights above white are
-  kept (Apple's brightest values 2.2–2.9 × white on the files that have them). Orientation matches, portrait included.
+  3200 × 2400 JPEG, Apple develops all 5184 × 3888 pixels. Nikon High Efficiency NEF (Z 8 HE and HE\*, Z 9 HE): the
+  built-in decoder shows the embedded JPEG, Apple develops the 8256 × 5504 sensor. In `auto` they import as raws that
+  develop (not *preview only*). Samsung's compressed SRW (NX500) Apple can't develop either: it imports as *preview
+  only*, its reason naming both decoders', and `app.rawDecoder` reports it as `lastFallback`. Every Canon CR3 tried
+  develops with the built-in decoder, so `auto` leaves them to it: R6 RAW and C-RAW, R8 (Apple develops these too,
+  ΔE below), and on Linux R3, R5 Mark II RAW and C-RAW, R6 Mark III, R7, R10, R50 V, R100 and M50 Mark II.
+- **Linear, unclipped, upright, the same frame.** At matched exposure Apple's tone response is within 0.94–1.17 of the
+  built-in decoder's from 10 stops below white to white (the A7 III: 0.875 one stop below white). Highlights above
+  white are kept (Apple's brightest values 2.2–2.9 × white on the files that have them). Orientation matches, portrait
+  included. Apple's picture shows exactly the built-in decoder's frame (scale 1.000, no shift, correlation
+  0.994–0.9996), and on the raws only Apple develops, the camera JPEG's frame (correlation 0.98–0.99). With Apple's
+  lens corrections on, the portrait ARW's frame would be 1.8 % tighter: they stay off when the headers are readable.
 - **Exposure.** A DNG: the same (−0.003 EV; both apply its `BaselineExposure`). Other raws: Apple's are 0.23–0.38 EV
   brighter, because Apple applies its own baseline exposure for the camera (R6 +0.5 EV, E-M1 Mark II +0.9 EV) and the
   built-in decoder none (its fit to the camera's JPEG sets the default look's brightness).
@@ -157,6 +163,8 @@ and a headless import.
   Apple takes about 200 ms for any decode, so the built-in decoder is faster for thumbnails and previews; at full size
   Apple is faster (1.1–2.2×).
 - **Tuning.** Core Image's shadow boost and EDR amount change no pixel once its tone curve is off, and its baseline
-  exposure gives the same pixels as LightCraft's gain: none of them is a setting any more. Apple's shadow bias and
-  highlight recovery change the output (shadow bias 0 → Apple's: R6 0.31 → 0.26 EV and ΔE 1.42 → 1.29; no highlight
-  recovery: brightest values 2.6 → 3.3 × white).
+  exposure gives the same pixels as LightCraft's gain: none of them is a setting any more. Shadow bias stays 0:
+  Apple's default for each camera darkens the deepest shadows to 1–15 % of the built-in decoder's at 9 stops below
+  white, and makes ΔE worse on four of seven files (DNG 0.54 → 1.13, R8 0.97 → 1.21; clearly better only on the R6,
+  1.42 → 1.29). Highlight recovery stays on (without it the brightest values go from 2.6 to 3.3 × white, and the A7 III's
+  tone response at white drops from 0.94 to 0.72).

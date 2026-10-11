@@ -2,7 +2,7 @@
 //! Rec.2020, as LightCraft's own decoders do.
 //!
 //! Apple keeps decoders and colour for hundreds of cameras up to date with the system, including raw variants
-//! LightCraft can't decode yet (Canon CRX variants, compressed ORF and SRW…). LightCraft uses it as an optional
+//! LightCraft can't decode yet (compressed Olympus ORF, Nikon High Efficiency NEF…). LightCraft uses it as an optional
 //! decoder: the engine falls back to its own (see `docs/apple-raw.md`).
 //!
 //! Everything Apple would do to the *look* is switched off, so the pixels stay scene-referred and LightCraft's

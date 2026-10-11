@@ -307,16 +307,33 @@ impl RawDecoders {
 fn develop(apple: &Apple, path: &Path, bytes: &[u8], max_edge: usize) -> Result<(Rgb32f, SourceInfo), String> {
     let format = lightcraft_raw::probe(bytes).ok_or("not a raw file")?;
     let header = lightcraft_raw::probe_info(bytes).ok();
-    let options = ci::Options {
+    let options = options_for(header.is_some(), max_edge);
+    let decoded = apple.develop(path, options, apple.guard.limits.for_edge(max_edge))?;
+    adapt(decoded, format, header.as_ref(), max_edge)
+}
+
+/// Core Image's options for a raw developed no larger than `max_edge`; `header`: the built-in decoder reads the file's
+/// headers.
+fn options_for(header: bool, max_edge: usize) -> ci::Options {
+    ci::Options {
         max_edge,
         draft: max_edge <= SourceLevel::Thumb.max_edge(),
         // with the file's own frame known, its lens corrections are LightCraft's ("Enable Profile Corrections");
         // without it, Apple's (Olympus and Panasonic raws need theirs)
-        lens_correction: header.is_none(),
+        lens_correction: !header,
         ..Default::default()
-    };
-    let decoded = apple.develop(path, options, apple.guard.limits.for_edge(max_edge))?;
-    adapt(decoded, format, header.as_ref(), max_edge)
+    }
+}
+
+/// Develop the raw at `path` (its `bytes`) with Apple's decoder as LightCraft does, `tune` adjusting Core Image's
+/// options first: for tools that compare or tune the decoders (`examples/raw_decoders.rs`). On the calling thread,
+/// without the session's guard (no time limit, slots or crash markers).
+pub fn develop_now(path: &str, bytes: &[u8], max_edge: usize, tune: impl FnOnce(&mut ci::Options)) -> Result<(Rgb32f, SourceInfo), String> {
+    let format = lightcraft_raw::probe(bytes).ok_or("not a raw file")?;
+    let header = lightcraft_raw::probe_info(bytes).ok();
+    let mut options = options_for(header.is_some(), max_edge);
+    tune(&mut options);
+    adapt(ci::decode(Path::new(path), &options)?, format, header.as_ref(), max_edge)
 }
 
 /// Describe the raw at `path` for import with Apple's decoder (only asked when the built-in decoder can't read its

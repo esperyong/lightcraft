@@ -125,6 +125,16 @@ fn gpu_crash_check_at(marker: Option<std::path::PathBuf>, in_memory: bool) -> Op
     left.map(|what| gpu_crash_notice(&what))
 }
 
+/// Where Apple's raw decoder leaves a marker while it develops a raw (`<config>/apple-raw`): a marker still there at
+/// the next launch names a raw it crashed on. Not with `LIGHTCRAFT_NO_PREFS` (tests, scripts), nor in a `--memory`
+/// session, which writes nothing (issue #169).
+fn apple_raw_markers(in_memory: bool) -> Option<std::path::PathBuf> {
+    if in_memory || std::env::var_os("LIGHTCRAFT_NO_PREFS").is_some() {
+        return None;
+    }
+    config_dir().map(|d| d.join("apple-raw"))
+}
+
 fn gpu_crash_notice(what: &str) -> String {
     format!(
         "LightCraft closed unexpectedly while starting the GPU last time ({what}), so GPU rendering is now off and photos render on the CPU. \
@@ -685,6 +695,10 @@ fn main() -> eframe::Result {
     // GPU compute: off if the preference says so, or if the last launch died creating the device
     // (issue #136) — before anything can create it
     let gpu_crash = gpu_crash_check(in_memory);
+    // a raw Apple's decoder crashed on last time is left to the built-in decoder (docs/apple-raw.md)
+    if let Some(dir) = apple_raw_markers(in_memory) {
+        lightcraft_engine::apple_raw::set_crash_markers(dir);
+    }
     let gpu_on = prefs.as_ref().is_none_or(|u| u.settings.gpu) && gpu_crash.is_none();
     lightcraft_engine::gpu::set_enabled(gpu_on);
     let options = eframe::NativeOptions {
@@ -882,6 +896,15 @@ mod tests {
         w.save_ui(&ui, false).unwrap();
         assert!(w.written.is_empty() && !d2.exists());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Issue #169 for Apple's raw decoder (issue #2): a `--memory` session leaves no crash markers (it writes nothing).
+    #[test]
+    fn memory_session_leaves_no_apple_raw_markers() {
+        assert_eq!(apple_raw_markers(true), None);
+        if std::env::var_os("LIGHTCRAFT_NO_PREFS").is_none() {
+            assert_eq!(apple_raw_markers(false), config_dir().map(|d| d.join("apple-raw")));
+        }
     }
 
     /// Issue #169: a `--memory` session neither arms the GPU crash sentinel (which would create

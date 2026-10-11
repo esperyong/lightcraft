@@ -317,8 +317,13 @@ pub struct MediaCache {
     /// share of [`crate::memory::budget`]); the least recently used entry of any of them goes first.
     budget: usize,
     pub file_loader: Option<FileLoader>,
+    /// [`Self::file_loader`] with the built-in raw decoders only: for raws the catalog shows from their embedded
+    /// preview (see [`MediaCache::source_ref`]). `None`: `file_loader` for those too.
+    pub plain_loader: Option<FileLoader>,
     pub file_probe: Option<FileProbe>,
     pub preview_loader: Option<PreviewLoader>,
+    /// Which raw decoders develop raws (Apple's on a Mac; `app.rawDecoder`). The file hooks share it.
+    pub raw: Arc<crate::apple_raw::RawDecoders>,
     /// Reads a photo file's bytes (Photo Merge); `None` = the local file system.
     pub file_bytes: Option<crate::merge::ByteReader>,
     /// The library's smart previews folder (originals offline: render from the proxy).
@@ -390,8 +395,10 @@ impl Default for MediaCache {
             preview_capacity: 0,
             budget,
             file_loader: None,
+            plain_loader: None,
             file_probe: None,
             preview_loader: None,
+            raw: Arc::new(crate::apple_raw::RawDecoders::default()),
             file_bytes: None,
             smart_dir: None,
             availability: Default::default(),
@@ -623,9 +630,22 @@ impl MediaCache {
             if let SourceRef::File { fallback, .. } = &mut r {
                 *fallback = Some(sp);
             }
-            return r;
+            return self.preview_only_loader(p, r);
         }
-        self.origin_ref(&p.source, max_edge)
+        let r = self.origin_ref(&p.source, max_edge);
+        self.preview_only_loader(p, r)
+    }
+
+    /// A raw the catalog shows from its embedded preview keeps showing it until it is reloaded (Photo ▸ Reload from
+    /// Disk), even when another raw decoder (Apple's) could develop it now: until then its white balance scale and
+    /// defaults are a rendered file's, and its pixels must be too.
+    fn preview_only_loader(&self, p: &Photo, mut r: SourceRef) -> SourceRef {
+        if p.preview_only.is_some()
+            && let (SourceRef::File { loader, .. }, Some(plain)) = (&mut r, &self.plain_loader)
+        {
+            *loader = Some(plain.clone());
+        }
+        r
     }
 
     /// How to load `origin` at most `max_edge` pixels long, ignoring decoded sources in memory (a

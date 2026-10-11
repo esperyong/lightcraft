@@ -11,6 +11,7 @@ use lightcraft_pipeline::SourceInfo;
 use lightcraft_raster::Rgb32f;
 use lightcraft_raster::resample::{Filter, fit};
 
+use crate::apple_raw::RawDecoders;
 use crate::media::{DenoiseSpec, FileLoader, FileProbe, PairLoader, PreviewLoader, ProbeInfo};
 
 fn meta_of(m: &lightcraft_meta::Metadata) -> (Meta, Option<String>) {
@@ -635,31 +636,46 @@ pub fn fs_pair_loader() -> PairLoader {
 /// interactive loads (the loupe, exports) never wait — they are counted, so background work
 /// yields to them.
 pub fn fs_hooks() -> (FileLoader, FileProbe) {
-    let loader: FileLoader = Arc::new(|path: &str, max_edge: usize| {
+    fs_hooks_with(Arc::new(RawDecoders::default()))
+}
+
+/// [`fs_hooks`] developing and describing raws with `raw`'s decoders (Apple's too on a Mac, as its mode says).
+pub fn fs_hooks_with(raw: Arc<RawDecoders>) -> (FileLoader, FileProbe) {
+    let decoders = raw.clone();
+    let loader: FileLoader = Arc::new(move |path: &str, max_edge: usize| {
         let len = std::fs::metadata(path).map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX)).unwrap_or(0);
         let weight = len * if max_edge <= crate::media::SourceLevel::Thumb.max_edge() { 3 } else { 6 };
         let gate = crate::memory::work_gate();
         let _permit = if crate::memory::is_background() { gate.acquire(weight) } else { gate.acquire_urgent(weight) };
         let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-        let r = load_vec(bytes, max_edge);
+        let r = decoders.load(path, bytes, max_edge);
         // the file, the samples and the intermediate images are gone: give their pages back
         crate::memory::release();
         r
     });
-    let probe: FileProbe = Arc::new(|path: &str| {
+    let probe: FileProbe = Arc::new(move |path: &str| {
         let len = std::fs::metadata(path).map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX)).unwrap_or(0);
         let _permit = crate::memory::work_gate().acquire(len);
         let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-        probe_bytes(path, &bytes)
+        raw.probe(path, &bytes)
     });
     (loader, probe)
 }
 
 impl crate::Session {
-    /// Install the filesystem file hooks (desktop, CLI, MCP headless).
-    pub fn with_fs(mut self) -> Self {
-        let (l, p) = fs_hooks();
+    /// Install the filesystem file hooks (desktop, CLI, MCP headless), with this Mac's raw decoder
+    /// ([`crate::apple_raw::system`]) as the second raw decoder.
+    pub fn with_fs(self) -> Self {
+        self.with_fs_and(crate::apple_raw::system())
+    }
+
+    /// [`Self::with_fs`] with `apple` as Apple's raw decoder (`None`: the built-in decoders only; tests pass a
+    /// stand-in).
+    pub fn with_fs_and(mut self, apple: Option<Arc<crate::apple_raw::Apple>>) -> Self {
+        self.media.raw = Arc::new(RawDecoders::new(apple));
+        let (l, p) = fs_hooks_with(self.media.raw.clone());
         self.media.file_loader = Some(l);
+        self.media.plain_loader = Some(fs_hooks().0);
         self.media.file_probe = Some(p);
         self.media.preview_loader = Some(fs_preview_loader());
         self.media.denoise.loader = Some(fs_pair_loader());
@@ -668,7 +684,7 @@ impl crate::Session {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use lightcraft_codecs::{ChromaSubsampling, EncodeImage, EncodeMeta, Samples, encode_jpeg};
 
@@ -860,7 +876,7 @@ mod tests {
     }
 
     /// A CR3-shaped file (not decodable yet) whose only content is a `PRVW` preview box.
-    fn cr3_with_preview(w: u32, h: u32) -> Vec<u8> {
+    pub(crate) fn cr3_with_preview(w: u32, h: u32) -> Vec<u8> {
         let px: Vec<u8> = (0..w * h).flat_map(|i| [(i % 251) as u8, 128, 200]).collect();
         let jpeg = encode_jpeg(&EncodeImage::new(w, h, 3, Samples::U8(&px)), 90, ChromaSubsampling::S444, &EncodeMeta::default()).unwrap();
         let mut b = b"\0\0\0\x18ftypcrx \0\0\0\x01crx isom".to_vec();

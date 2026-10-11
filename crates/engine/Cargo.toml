@@ -27,6 +27,8 @@ lightcraft-meta = { workspace = true }
 lightcraft-faces = { workspace = true }
 # Apple's Vision framework (labels, aesthetics, subject masks); a stub that says so off macOS
 lightcraft-vision = { workspace = true }
+# Apple's raw decoder (Core Image's CIRAWFilter) for raws the built-in decoders can't develop; a stub off macOS
+lightcraft-coreimage = { workspace = true }
 miniz_oxide = { workspace = true }
 lightcraft-merge = { workspace = true }
 rayon = { workspace = true }

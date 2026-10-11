@@ -3122,6 +3122,7 @@ dependencies = [
  "lightcraft-catalog",
  "lightcraft-codecs",
  "lightcraft-color",
+ "lightcraft-coreimage",
  "lightcraft-denoise",
  "lightcraft-denoise-core",
  "lightcraft-develop",

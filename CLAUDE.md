@@ -71,9 +71,11 @@ of it. Full standard: `../craftrules/standards/never-crash.md`
 - **`unsafe` lives only in `crates/sysmem`** (one FFI call, `malloc_zone_pressure_relief`, that returns freed
   allocator pages to macOS after raw decodes), **`crates/mpsgraph`** (the Objective-C calls that run AI denoise on
   Apple's MetalPerformanceShadersGraph, macOS only; a safe API, the engine falls back to the wgpu kernels when it fails
-  its check against the CPU) **and `crates/vision`** (the Objective-C calls into Apple's Vision framework for labels,
+  its check against the CPU), **`crates/vision`** (the Objective-C calls into Apple's Vision framework for labels,
   aesthetics scores and subject masks, macOS only; a safe API that checks images before and results after, the
-  engine falls back to the heuristic masks elsewhere). Every other production crate root has `#![forbid(unsafe_code)]`. A new
+  engine falls back to the heuristic masks elsewhere) **and `crates/coreimage`** (the Objective-C calls into Core Image's
+  `CIRAWFilter`, Apple's raw decoder, macOS 12+ only; a safe API that bounds sizes and checks Core Image's output, the
+  engine falls back to its own decoders). Every other production crate root has `#![forbid(unsafe_code)]`. A new
   unsafe need goes in an isolated, well-tested helper crate like it: `// SAFETY:` on every block, a safe API, a safe
   fallback where possible, and a line here naming it.
 - **Input-derived numbers are hostile:** `get()` instead of `[i]`/`[a..b]` for offsets from files, users, agents or
@@ -165,7 +167,7 @@ Layers (authoritative table: `xtask/src/layers.rs`; a crate may only depend on l
 - **L1** `meta` (EXIF/XMP), `raw` (decoders in `src/vendor/`, demosaic), `codecs`, `develop` (settings model + control
   specs), `denoise-core`/`denoise` (own ONNX executor), `faces`, `scenes` (procedural demo photos)
 - **L2** `pipeline` · **L3** `gpu`, `catalog`, `preview`, `merge`, `segment` (SAM 3), `mpsgraph` (denoise on Apple MPSGraph),
-  `vision` (Apple Vision: labels, aesthetics, subject masks)
+  `vision` (Apple Vision: labels, aesthetics, subject masks), `coreimage` (Apple's raw decoder, CIRAWFilter)
   · **L4** `engine` · **L5** `ui-egui`, `mcp`
 - apps: `lightcraft` (desktop + control server), `lightcraft-cli`, `lightcraft-web` (wasm); `xtask` = tooling.
 

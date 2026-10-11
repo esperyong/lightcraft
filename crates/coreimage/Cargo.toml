@@ -1,0 +1,27 @@
+[package]
+name = "lightcraft-coreimage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LightCraft coreimage (L3): Apple's raw decoder (Core Image's CIRAWFilter) on macOS, as scene-linear Rec.2020. Allowed `unsafe` for its Objective-C calls, behind a safe API."
+
+# Opts out of the workspace lints only to keep `unsafe_code = "deny"` overridable for the one module that calls
+# Objective-C (`macos`); like crates/sysmem, crates/mpsgraph and crates/vision. See AGENTS.md and craftrules
+# standards/never-crash.md ("isolated helper library crate").
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[dependencies]
+
+# The bindings are pure Rust (no C build step); the frameworks are the system's own, as for wgpu's Metal backend.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["std", "NSData", "NSDictionary", "NSObject", "NSProcessInfo", "NSString", "NSURL", "NSValue"] }
+objc2-core-foundation = { workspace = true, features = ["std", "CFCGTypes", "CFString"] }
+objc2-core-graphics = { workspace = true, features = ["std", "objc2", "CGColorSpace"] }
+objc2-core-image = { workspace = true, features = ["std", "CIContext", "CIFilter", "CIImage", "CIRAWFilter", "objc2-core-foundation", "objc2-core-graphics"] }

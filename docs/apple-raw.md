@@ -2,12 +2,13 @@
 
 On macOS 12 and later LightCraft can develop raws with Apple's raw decoder, Core Image's `CIRAWFilter`. Apple keeps
 decoders for hundreds of cameras up to date with the system, so on a Mac the raws LightCraft's own decoders can't
-develop yet (unverified Canon CRX variants, compressed Olympus ORF and Samsung SRW, Nikon "lossy after split" NEF…)
-develop instead of opening from their embedded JPEG. LightCraft's own decoders stay the default for everything they
-can develop, and the fallback for everything else. Elsewhere (and before macOS 12) nothing changes.
+develop yet (compressed Olympus ORF and Samsung SRW, Nikon High Efficiency and "lossy after split" NEF, unverified
+Canon CRX variants…) develop instead of opening from their embedded JPEG. LightCraft's own decoders stay the default
+for everything they can develop, and the fallback for everything else. Elsewhere (and before macOS 12) nothing
+changes.
 
-*Status (2026-10-11):* implemented and tested on Linux with a stand-in for Core Image; measured on real files on an
-Apple Silicon Mac is pending (fork issue #2). Numbers go in [Measured on a Mac](#measured-on-a-mac).
+*Status (2026-10-11):* measured on an Apple M5 with macOS 26.6.2 (fork issue #2): see
+[Measured on a Mac](#measured-on-a-mac).
 
 ## Modes
 
@@ -31,8 +32,9 @@ LightCraft's pipeline takes scene-linear Rec.2020, so Apple's picture is made li
 - **Scene-linear.** Everything Apple would do to the look is off: no tone curve ("boost") or shadow boost, no local
   tone mapping, contrast, sharpening, luminance/colour noise or moiré reduction, no gamut mapping. The output is
   extended (unclipped) floats in linear Rec.2020, read back in 16 MiB strips. The camera's baseline exposure is applied
-  by LightCraft as a linear gain (Core Image would clip the highlights it pushes past white). Highlight recovery stays
-  Apple's. The tone curve, noise reduction and sharpening are then LightCraft's, as for any raw.
+  by LightCraft as a linear gain (Core Image's own gives the same pixels on macOS 26; this way a later Core Image
+  can't change it). Highlight recovery stays Apple's. The tone curve, noise reduction and sharpening are then
+  LightCraft's, as for any raw.
 - **Upright, in the file's own frame.** Core Image applies the file's orientation. When LightCraft's decoder can read
   the file's headers (as for unverified CRX variants), Apple's picture is centre-cropped to the headers' default crop
   (it may differ by up to 5 %; a larger difference, or a picture turned 90°, is refused and the built-in decoder's
@@ -99,10 +101,13 @@ cargo run --release -p lightcraft-engine --example raw_decoders -- --out /tmp/ra
 For each file: both decoders' size and time; Apple's exposure against the built-in decoder's (`gainEv`); the tone
 response by stop below white (`tone`: Apple / built-in at matched exposure, 1 everywhere means the same, linear,
 response); how much goes above white (`appleOver1`, `appleMax`); a fitted 3×3 matrix (identity: the same colour) and
-the Oklab ΔE at matched exposure; side-by-side renders with the default raw settings in `--out`. `--sweep` repeats the
-comparison with Core Image's tuning changed one setting at a time. A file the built-in decoder shows from its embedded
-preview (`"raw": false`) has nothing to compare against: only Apple develops it. `--self-check` shows what identical
-looks like, on any platform.
+the Oklab ΔE at matched exposure; where Apple's picture sits on the built-in one (`frame`: `scale` above 1 means
+Apple's frame is tighter, `dx`/`dy` a shift in fractions of the width and height, `match` the correlation there);
+side-by-side renders with the default raw settings in `--out`. `--sweep` repeats the comparison with Core Image's
+tuning changed one setting at a time (Apple's shadow bias, no highlight recovery, Apple's lens corrections). A file
+the built-in decoder shows from its embedded preview (`"raw": false`, `previewOnly` says why) has no colour to
+compare: only Apple develops it, and `previewFrame` places Apple's picture on the camera's JPEG. `--self-check` shows
+what identical looks like, and a frame zoomed 3 %, on any platform.
 
 ## Testing on a Mac
 
@@ -116,5 +121,42 @@ LIGHTCRAFT_RAW_DECODER=builtin cargo run --release -p lightcraft-cli -- render F
 
 ## Measured on a Mac
 
-Pending: decode times (thumbnail, preview, 24 MP full size) against the built-in decoder, the tone response and
-colour difference on the corpus' raws, and CR3 / compressed ORF samples the built-in decoders can't develop.
+Apple M5 (10 cores, 32 GB), macOS 26.6.2 (`ciraw1:26.6.2`), 2026-10-11: `raw_decoders --timing --sweep` on CC0 raws
+from raw.pixls.us and a portrait ARW (33 MP, 7008 × 4672), plus the tests above, `lightcraft-cli render` in both modes
+and a headless import.
+
+- **What only Apple develops.** Compressed ORF (E-M1 Mark II, two files): the built-in decoder shows the embedded
+  3200 × 2400 JPEG; Apple develops all 5184 × 3888 pixels, and in `auto` they import as raws that develop (not
+  *preview only*). Every Canon CR3 tried develops with the built-in decoder, so `auto` leaves them to it: R6 RAW and
+  C-RAW, R8 (Apple develops these too, ΔE below), and on Linux R3, R5 Mark II RAW and C-RAW, R6 Mark III, R7, R10,
+  R50 V, R100 and M50 Mark II.
+- **Linear, unclipped, upright.** At matched exposure Apple's tone response is within 0.94–1.17 of the built-in
+  decoder's from 10 stops below white to white (the A7 III: 0.875 one stop below white). Highlights above white are
+  kept (Apple's brightest values 2.2–2.9 × white on the files that have them). Orientation matches, portrait included.
+- **Exposure.** A DNG: the same (−0.003 EV; both apply its `BaselineExposure`). Other raws: Apple's are 0.23–0.38 EV
+  brighter, because Apple applies its own baseline exposure for the camera (R6 +0.5 EV, E-M1 Mark II +0.9 EV) and the
+  built-in decoder none (its fit to the camera's JPEG sets the default look's brightness).
+- **Colour** at matched exposure (Oklab ΔE × 100, mean / 95th percentile; a fitted 3×3 matrix's residual): DNG (5D Mark
+  III) 0.54 / 1.17; R8 0.97 / 2.60; D7500 1.37 / 4.13; portrait ARW 1.39 / 3.27; R6 1.41 / 2.86 (C-RAW the same);
+  A7 III 1.68 / 3.97; residual 0.002–0.019. Rendered with the default raw settings, Apple's pictures look darker and
+  more contrasty and saturated than the built-in decoder's, which take the look of the camera's JPEG (a portrait's sky
+  that clips there keeps its clouds with Apple's).
+- **Speed** (ms, built-in / Apple; one decode after the first, which takes Core Image 1.1–1.6 s to start):
+
+  | File | 512 px | 2,560 px | Full size |
+  |---|---|---|---|
+  | 5D Mark III DNG, 22 MP | 60 / 94 | 136 / 128 | 540 / 247 |
+  | A7 III ARW, 24 MP | 42 / 196 | 86 / 237 | 529 / 352 |
+  | R8 CR3, 24 MP | 118 / 222 | 130 / 286 | 414 / 391 |
+  | D7500 NEF, 21 MP | 132 / 208 | 177 / 236 | 503 / 324 |
+  | R6 CR3, 20 MP | 198 / 184 | 230 / 210 | 529 / 301 |
+  | R6 C-RAW CR3, 20 MP | 237 / 201 | 263 / 226 | 575 / 312 |
+  | portrait ARW, 33 MP | 104 / 233 | 187 / 363 | 829 / 631 |
+  | E-M1 Mark II ORF, 20 MP | 15 / 224 (built-in: the JPEG) | 40 / 250 | 25 / 338 |
+
+  Apple takes about 200 ms for any decode, so the built-in decoder is faster for thumbnails and previews; at full size
+  Apple is faster (1.1–2.2×).
+- **Tuning.** Core Image's shadow boost and EDR amount change no pixel once its tone curve is off, and its baseline
+  exposure gives the same pixels as LightCraft's gain: none of them is a setting any more. Apple's shadow bias and
+  highlight recovery change the output (shadow bias 0 → Apple's: R6 0.31 → 0.26 EV and ΔE 1.42 → 1.29; no highlight
+  recovery: brightest values 2.6 → 3.3 × white).

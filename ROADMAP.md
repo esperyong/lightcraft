@@ -188,6 +188,8 @@ Not decoded yet — preview only (no permissively licensed description; black-bo
   files): rows above the split decode with the regular lossy table; from the split row on a different code is used
   that our black-box analysis has not recovered yet (none of the four regular tables fits, also not with byte
   alignment or reset predictors at the split row). The other Nikon Huffman variants are decoded (`crates/raw/src/vendor/nefc.rs` documents the analysis).
+- **Nikon High Efficiency (HE, HE\*) NEF** (e.g. Z 8, Z 9: no linearization table in maker note `0x96`; checked on
+  three raw.pixls.us samples).
 - **Olympus compressed ORF**, **Canon CR3 unverified CRX variants** (M11.1), **Canon sRAW/mRAW**.
 
 On a Mac (macOS 12+) Apple's raw decoder (Core Image's `CIRAWFilter`, `crates/coreimage`) develops the raws above

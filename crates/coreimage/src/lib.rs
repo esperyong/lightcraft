@@ -8,8 +8,9 @@
 //! Everything Apple would do to the *look* is switched off, so the pixels stay scene-referred and LightCraft's
 //! pipeline does tone, noise reduction and sharpening as for any raw: no tone curve ("boost"), no local tone mapping,
 //! no contrast, sharpening, noise or moiré reduction, no gamut mapping; extended (unclipped) output; the camera's
-//! baseline exposure applied here as a linear gain rather than by Core Image (which would clip the highlights it
-//! pushes past white). Highlight recovery and, where asked, the lens corrections the raw carries stay Apple's.
+//! baseline exposure applied here as a linear gain (Core Image's gives the same pixels on macOS 26, measured; here it
+//! does not depend on how a later Core Image applies it). Highlight recovery and, where asked, the lens corrections
+//! the raw carries stay Apple's.
 //!
 //! The Objective-C calls are `unsafe` and live in one module (`macos`), every block with its `SAFETY:` reasoning; the
 //! API here is safe. Objective-C exceptions cannot be caught without a C helper, so what Core Image is given is
@@ -45,31 +46,16 @@ pub struct Options {
     pub lens_correction: bool,
     /// Develop for this white (CIE 1931 xy) instead of the camera's as-shot one (for comparisons).
     pub neutral_xy: Option<(f64, f64)>,
-    /// Tuning; the defaults give scene-linear output. Core Image's shadow boost (0: none).
-    pub boost_shadow_amount: f32,
-    /// Core Image's shadow bias (`None`: Apple's default for the camera).
+    /// Tuning (`examples/raw_decoders.rs --sweep` in the engine compares the choices). Core Image's shadow bias
+    /// (`None`: Apple's default for the camera).
     pub shadow_bias: Option<f32>,
-    /// Core Image's extended dynamic range: how far above white the output may go.
-    pub edr_amount: f32,
     /// Reconstruct clipped highlights from the channels that are not clipped.
     pub highlight_recovery: bool,
-    /// Apply the camera's baseline exposure here, as a linear gain after Core Image (`false`: Core Image applies it).
-    pub baseline_in_rust: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options {
-            max_edge: usize::MAX,
-            draft: false,
-            lens_correction: false,
-            neutral_xy: None,
-            boost_shadow_amount: 0.0,
-            shadow_bias: Some(0.0),
-            edr_amount: 2.0,
-            highlight_recovery: true,
-            baseline_in_rust: true,
-        }
+        Options { max_edge: usize::MAX, draft: false, lens_correction: false, neutral_xy: None, shadow_bias: Some(0.0), highlight_recovery: true }
     }
 }
 
@@ -83,8 +69,7 @@ impl Options {
         {
             return Err(format!("({x}, {y}) is not a white"));
         }
-        let tuning = [self.boost_shadow_amount, self.edr_amount, self.shadow_bias.unwrap_or(0.0)];
-        if !tuning.iter().all(|v| v.is_finite() && (-10.0..=10.0).contains(v)) {
+        if self.shadow_bias.is_some_and(|v| !(v.is_finite() && (-10.0..=10.0).contains(&v))) {
             return Err("tuning out of range".into());
         }
         Ok(())
@@ -262,7 +247,8 @@ mod tests {
             assert!(Options { neutral_xy: Some(xy), ..Default::default() }.check().is_err(), "{xy:?}");
         }
         assert!(Options { neutral_xy: Some((0.3127, 0.329)), ..Default::default() }.check().is_ok());
-        assert!(Options { edr_amount: f32::NAN, ..Default::default() }.check().is_err());
+        assert!(Options { shadow_bias: Some(f32::NAN), ..Default::default() }.check().is_err());
+        assert!(Options { shadow_bias: None, ..Default::default() }.check().is_ok());
         // whole pixels, rounded inward; y is the top edge in Core Image's (upward) coordinates
         assert_eq!(pixel_bounds(0.0, 0.0, 6000.0, 4000.0).unwrap(), (0.0, 4000.0, 6000, 4000));
         assert_eq!(pixel_bounds(-0.25, 10.5, 2560.4, 1706.9).unwrap(), (0.0, 1717.0, 2560, 1706));

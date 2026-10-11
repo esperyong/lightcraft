@@ -63,17 +63,16 @@ fn filter(path: &Path, options: &Options) -> Result<(Retained<CIRAWFilter>, f32)
     // SAFETY (this block): getters and setters of a live filter, with values in the ranges Core Image documents
     // (amounts are floats it clamps itself); features this camera lacks are only set when the filter says it has them.
     let baseline = unsafe {
+        // applied as a linear gain after rendering (`decode`)
         let baseline = f.baselineExposure();
-        if options.baseline_in_rust {
-            f.setBaselineExposure(0.0);
-        }
+        f.setBaselineExposure(0.0);
         f.setExposure(0.0);
+        // no tone curve, and with it no shadow boost or EDR headroom (measured on macOS 26: neither changes a pixel at
+        // boost 0, and the extended output keeps what is above white)
         f.setBoostAmount(0.0);
-        f.setBoostShadowAmount(options.boost_shadow_amount);
         if let Some(bias) = options.shadow_bias {
             f.setShadowBias(bias);
         }
-        f.setExtendedDynamicRangeAmount(options.edr_amount);
         f.setGamutMappingEnabled(false);
         if f.isHighlightRecoverySupported() {
             f.setHighlightRecoveryEnabled(options.highlight_recovery);
@@ -149,9 +148,9 @@ pub fn decode(path: &Path, options: &Options) -> Result<Decoded, String> {
         let image = output(&f)?;
         let space = linear_rec2020()?;
         let ctx = context(&space);
-        let gain = if options.baseline_in_rust { 2f32.powf(crate::baseline(baseline)) } else { 1.0 };
+        let gain = 2f32.powf(crate::baseline(baseline));
         let (width, height, rgb) = render_rgb(&ctx, &image, &space, STRIP_BYTES, gain)?;
-        Ok(Decoded { width, height, rgb, white_xy, baseline_exposure: if options.baseline_in_rust { baseline } else { 0.0 }, native })
+        Ok(Decoded { width, height, rgb, white_xy, baseline_exposure: baseline, native })
     })
 }
 

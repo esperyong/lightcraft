@@ -1,6 +1,7 @@
 //! The built-in and Apple's raw decoders on the same files (issue #2, docs/apple-raw.md): size, speed, tone response
 //! (is Apple's output as linear as the built-in decoder's?), highlights above white, colour (a fitted 3×3 matrix and
-//! Oklab ΔE at matched exposure) and side-by-side renders with the default raw settings.
+//! Oklab ΔE at matched exposure), the frame (does Apple's picture show the same part of the scene?) and side-by-side
+//! renders with the default raw settings.
 //!
 //! ```sh
 //! cargo run --release -p lightcraft-engine --example raw_decoders -- [--edge 1536] [--out DIR] [--timing] [--sweep] FILE...
@@ -10,7 +11,8 @@
 //! full size; `--sweep` repeats the comparison with Core Image's tuning changed one setting at a time (what the
 //! defaults in `lightcraft_coreimage::Options` were chosen from); `--out` writes `<name>-builtin-vs-apple.jpg`
 //! (built-in left, Apple right). Needs macOS 12 or later; elsewhere it says so. `--self-check` compares the built-in
-//! decoder with itself made twice as bright (anywhere): +1 EV, a flat tone response, the identity matrix and ΔE 0.
+//! decoder with itself made twice as bright (anywhere): +1 EV, a flat tone response, the identity matrix, ΔE 0 and the
+//! same frame; and with itself zoomed in 3 % and moved right 1 % and up 0.5 % (`frameCheck`).
 
 use std::time::Instant;
 
@@ -42,11 +44,16 @@ fn main() {
     }
     if check {
         for f in &files {
-            let r = std::fs::read(f).map_err(|e| e.to_string()).and_then(|bytes| lightcraft_engine::files::load_bytes(&bytes, edge));
+            let r = std::fs::read(f)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| Ok((lightcraft_engine::files::load_bytes(&bytes, edge)?, preview_only(f, &bytes))));
             let v = match r {
-                Ok((b, _)) => {
+                Ok(((b, info), why)) => {
+                    let mut builtin = facts(&b, &info, 0.0);
+                    builtin["previewOnly"] = why;
                     let doubled = Rgb32f { width: b.width, height: b.height, data: b.data.iter().map(|p| p.map(|c| c * 2.0)).collect() };
-                    json!({"file": f, "selfCheck": stats(&b, &doubled)})
+                    let moved = zoomed(&b, 1.03, (0.01, -0.005));
+                    json!({"file": f, "builtin": builtin, "selfCheck": stats(&b, &doubled), "frameCheck": frame(&b, &moved)})
                 }
                 Err(e) => json!({"file": f, "error": e}),
             };
@@ -75,17 +82,27 @@ fn facts(img: &Rgb32f, info: &SourceInfo, ms: f64) -> Value {
         "size": [img.width, img.height],
         "ms": ms,
         "raw": info.raw,
+        "previewOnly": Value::Null,
         "asShot": [info.as_shot_temp, info.as_shot_tint],
         "relativeWb": info.relative_wb,
         "lens": info.lens.is_some(),
     })
 }
 
+/// Why the built-in decoder shows the raw at `path` from its embedded preview (`null`: it develops it).
+fn preview_only(path: &str, bytes: &[u8]) -> Value {
+    match lightcraft_engine::files::probe_bytes(path, bytes) {
+        Ok(p) => json!(p.preview_only),
+        Err(e) => json!(format!("not described: {e}")),
+    }
+}
+
 fn compare(path: &str, edge: usize, out: Option<&str>, timing: bool, sweep: bool) -> Result<Value, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let t = Instant::now();
     let (b, b_info) = lightcraft_engine::files::load_bytes(&bytes, edge)?;
-    let builtin = facts(&b, &b_info, ms(t));
+    let mut builtin = facts(&b, &b_info, ms(t));
+    builtin["previewOnly"] = preview_only(path, &bytes);
     let t = Instant::now();
     let apple = apple_raw::develop_now(path, &bytes, edge, |_| {});
     let mut v = json!({"file": path, "edge": edge, "builtin": builtin});
@@ -97,17 +114,14 @@ fn compare(path: &str, edge: usize, out: Option<&str>, timing: bool, sweep: bool
         }
     };
     v["apple"] = facts(&a, &a_info, ms(t));
-    // (a built-in "raw: false" is the embedded preview: only Apple develops this raw, there is nothing to compare)
+    // (a built-in "raw: false" is the embedded preview: only Apple develops this raw, there is no colour to compare)
     if b_info.raw {
         v["compare"] = stats(&b, &a);
         if sweep {
-            let variants: [(&str, fn(&mut ci::Options)); 6] = [
-                ("edr0", |o| o.edr_amount = 0.0),
-                ("edr1", |o| o.edr_amount = 1.0),
-                ("boostShadow1", |o| o.boost_shadow_amount = 1.0),
+            let variants: [(&str, fn(&mut ci::Options)); 3] = [
                 ("appleShadowBias", |o| o.shadow_bias = None),
-                ("appleBaseline", |o| o.baseline_in_rust = false),
                 ("noHighlightRecovery", |o| o.highlight_recovery = false),
+                ("appleLens", |o| o.lens_correction = true),
             ];
             let mut s = serde_json::Map::new();
             for (name, tune) in variants {
@@ -116,6 +130,9 @@ fn compare(path: &str, edge: usize, out: Option<&str>, timing: bool, sweep: bool
             }
             v["sweep"] = Value::Object(s);
         }
+    } else {
+        // the embedded preview is the camera's own rendering (with its lens corrections): Apple's frame on it
+        v["previewFrame"] = frame(&b, &a);
     }
     if timing {
         let mut tm = serde_json::Map::new();
@@ -215,11 +232,100 @@ fn stats(b: &Rgb32f, a: &Rgb32f) -> Value {
         "matrix": matrix.map(|m| m.map(|r| r.map(|v| (v * 1e4).round() / 1e4))),
         "matrixRms": rms,
         "deltaE": {"pixels": de.len(), "mean": round4(mean), "p95": round4(p95)},
+        "frame": frame(&b, &a),
     })
 }
 
 fn round4(v: f32) -> f32 {
     (v * 1e4).round() / 1e4
+}
+
+/// Where Apple's picture `a` sits on the built-in one `b`: Apple's pixel at c + s·(p − c) + d shows what the built-in
+/// picture shows at p (c: the centre; d in fractions of the width and height). `scale` s above 1: Apple's frame is
+/// tighter (a lens correction, a smaller crop); `match`: the correlation of their log luminance there (1: the same
+/// structure). Searched coarsely at 192 px, then finely at 384 px.
+fn frame(b: &Rgb32f, a: &Rgb32f) -> Value {
+    let mut centre = (1.0, (0.0, 0.0));
+    let mut best = None;
+    for (long, s_step, s_n, d_step, d_n) in [(192.0, 0.01, 8, 0.01, 3), (384.0, 0.002, 5, 0.002, 5)] {
+        let k = (long / b.width.max(b.height) as f64).min(1.0);
+        let (w, h) = (((b.width as f64 * k).round() as usize).max(16), ((b.height as f64 * k).round() as usize).max(16));
+        let (lb, la) = (structure(b, w, h), structure(a, w, h));
+        best = None;
+        for i in -s_n..=s_n {
+            for j in -d_n..=d_n {
+                for l in -d_n..=d_n {
+                    let s = centre.0 + f64::from(i) * s_step;
+                    let d = (centre.1.0 + f64::from(j) * d_step, centre.1.1 + f64::from(l) * d_step);
+                    if let Some(c) = correlation(&lb, &la, w, h, s, d)
+                        && best.is_none_or(|(bc, _, _)| c > bc)
+                    {
+                        best = Some((c, s, d));
+                    }
+                }
+            }
+        }
+        let Some((_, s, d)) = best else { return Value::Null };
+        centre = (s, d);
+    }
+    let r = |v: f64| round4(v as f32);
+    best.map(|(c, s, d)| json!({"scale": r(s), "dx": r(d.0), "dy": r(d.1), "match": r(c)})).unwrap_or(Value::Null)
+}
+
+/// Log luminance at `w` × `h`: the structure frames are matched on, whatever the exposure.
+fn structure(img: &Rgb32f, w: usize, h: usize) -> Vec<f32> {
+    resize(img, w, h, Filter::Box).data.iter().map(|p| (luminance(*p).max(0.0) + 1.0 / 256.0).log2()).collect()
+}
+
+/// The correlation of `b` and `a` (both `w` × `h`) over the middle 70 % of `b`, `a` sampled as [`frame`] describes.
+fn correlation(b: &[f32], a: &[f32], w: usize, h: usize, s: f64, d: (f64, f64)) -> Option<f64> {
+    let (cx, cy) = ((w as f64 - 1.0) / 2.0, (h as f64 - 1.0) / 2.0);
+    let (mut n, mut sb, mut sa, mut sbb, mut saa, mut sab) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for y in h * 15 / 100..h * 85 / 100 {
+        let qy = cy + s * (y as f64 - cy) + d.1 * h as f64;
+        for x in w * 15 / 100..w * 85 / 100 {
+            let qx = cx + s * (x as f64 - cx) + d.0 * w as f64;
+            let Some(va) = bilinear(a, w, h, qx, qy) else { continue };
+            let (vb, va) = (f64::from(b[y * w + x]), f64::from(va));
+            n += 1.0;
+            sb += vb;
+            sa += va;
+            sbb += vb * vb;
+            saa += va * va;
+            sab += vb * va;
+        }
+    }
+    let den = ((n * sbb - sb * sb) * (n * saa - sa * sa)).sqrt();
+    (n >= 100.0 && den > 1e-9).then(|| (n * sab - sb * sa) / den)
+}
+
+/// `img` (`w` × `h`) at (`x`, `y`), interpolated; `None` outside it.
+fn bilinear(img: &[f32], w: usize, h: usize, x: f64, y: f64) -> Option<f32> {
+    if !(0.0..=(w - 1) as f64).contains(&x) || !(0.0..=(h - 1) as f64).contains(&y) {
+        return None;
+    }
+    let (x0, y0) = (x as usize, y as usize);
+    let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+    let (fx, fy) = ((x - x0 as f64) as f32, (y - y0 as f64) as f32);
+    let p = |x: usize, y: usize| img[y * w + x];
+    Some((p(x0, y0) * (1.0 - fx) + p(x1, y0) * fx) * (1.0 - fy) + (p(x0, y1) * (1.0 - fx) + p(x1, y1) * fx) * fy)
+}
+
+/// `img` zoomed in `s` times about its centre and moved by `d` (fractions of its width and height), as [`frame`]
+/// measures (for `--self-check`).
+fn zoomed(img: &Rgb32f, s: f64, d: (f64, f64)) -> Rgb32f {
+    let (w, h) = (img.width, img.height);
+    let planes: Vec<Vec<f32>> = (0..3).map(|c| img.data.iter().map(|p| p[c]).collect()).collect();
+    let (cx, cy) = ((w as f64 - 1.0) / 2.0, (h as f64 - 1.0) / 2.0);
+    let data = (0..w * h)
+        .map(|i| {
+            let (x, y) = ((i % w) as f64, (i / w) as f64);
+            let px = (cx + (x - cx - d.0 * w as f64) / s).clamp(0.0, (w - 1) as f64);
+            let py = (cy + (y - cy - d.1 * h as f64) / s).clamp(0.0, (h - 1) as f64);
+            [0, 1, 2].map(|c| bilinear(&planes[c], w, h, px, py).unwrap_or(0.0))
+        })
+        .collect();
+    Rgb32f { width: w, height: h, data }
 }
 
 /// The 3×3 matrix `m` with Apple ≈ m · built-in (least squares), `None` for too few or degenerate pixels.
@@ -302,6 +408,15 @@ fn summary(v: &Value) {
         }
     };
     eprintln!("{f}: {}; {}", side("builtin"), side("apple"));
+    if let Some(why) = v["builtin"]["previewOnly"].as_str() {
+        eprintln!("  built-in: preview only ({why})");
+    }
+    let frame = |name: &str, f: &Value| {
+        if f.is_object() {
+            eprintln!("  {name}: scale {} shift {} {} match {}", f["scale"], f["dx"], f["dy"], f["match"]);
+        }
+    };
+    frame("frame (Apple on the embedded preview)", &v["previewFrame"]);
     let c = &v["compare"];
     if c.is_object() {
         eprintln!(
@@ -310,5 +425,6 @@ fn summary(v: &Value) {
         );
         let tone: Vec<String> = c["tone"].as_array().into_iter().flatten().map(|t| format!("{}:{}", t["stop"], t["ratio"])).collect();
         eprintln!("  tone (stop: Apple/built-in, 1 = same response): {}", tone.join(" "));
+        frame("frame (Apple on built-in)", &c["frame"]);
     }
 }

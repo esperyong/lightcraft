@@ -97,6 +97,13 @@ fn ext_upper(name: &str) -> String {
 /// ([`lightcraft_codecs::read_header`], which refuses truncated files but can't see damage inside
 /// compressed data that is all there: such a file imports and shows as unreadable when rendered).
 pub fn probe_bytes(name: &str, bytes: &[u8]) -> Result<ProbeInfo, String> {
+    probe_bytes_with(name, bytes, None)
+}
+
+/// [`probe_bytes`] with another raw decoder ([`AltRaw`]) for the raws the built-in one can't describe: what it says
+/// about such a raw (upright size, as-shot white) makes it a raw that develops, not a preview-only one. Raws whose
+/// headers the built-in decoder reads keep its description (the other decoder's pictures are fitted to that frame).
+pub fn probe_bytes_with(name: &str, bytes: &[u8], alt: Option<&AltRaw>) -> Result<ProbeInfo, String> {
     let content_hash = Some(lightcraft_preview::hash_bytes(bytes).to_string());
     let m = lightcraft_meta::extract(bytes);
     let (meta, captured) = meta_of(&m);
@@ -104,6 +111,26 @@ pub fn probe_bytes(name: &str, bytes: &[u8]) -> Result<ProbeInfo, String> {
         let raw = match lightcraft_raw::probe_info(bytes).map_err(|e| preview_reason(bytes, e)) {
             Ok(r) => r,
             Err(Ok(why)) => {
+                let why = match alt.map(|a| (a, (a.probe)(bytes))) {
+                    Some((_, Ok(f))) => {
+                        return Ok(ProbeInfo {
+                            width: f.width,
+                            height: f.height,
+                            format: ext_upper(name),
+                            kind: MediaKind::Raw,
+                            file_size: bytes.len() as u64,
+                            captured,
+                            meta,
+                            as_shot_wb: f.as_shot_wb,
+                            content_hash,
+                            xmp: lightcraft_meta::embedded(bytes).xmp,
+                            preview_only: None,
+                            embedded_lens: None,
+                        });
+                    }
+                    Some((a, Err(e))) => alt_reason(why, a, &e),
+                    None => why,
+                };
                 // a raw variant we can't decode yet: describe it from its embedded preview
                 let (w, h) = embedded_preview_size(bytes).ok_or(format!("unsupported raw ({why}) without an embedded preview"))?;
                 return Ok(ProbeInfo {
@@ -220,20 +247,63 @@ pub fn bin_factor(raw: &lightcraft_raw::RawImage, max_edge: usize) -> Option<usi
 /// instead of each one waking the pool from outside and waiting for it (which costs more than the
 /// loops themselves when the machine is busy).
 pub fn load_bytes(bytes: &[u8], max_edge: usize) -> Result<(Rgb32f, SourceInfo), String> {
-    rayon::scope(|_| load_bytes_now(std::borrow::Cow::Borrowed(bytes), max_edge, None).map(|(img, _, info)| (img, info)))
+    rayon::scope(|_| load_bytes_now(std::borrow::Cow::Borrowed(bytes), max_edge, None, None).map(|(img, _, info)| (img, info)))
 }
 
 /// [`load_bytes`] taking the file's bytes: a raw file's bytes are freed as soon as it is decoded
 /// (less memory held while it is developed).
 pub fn load_vec(bytes: Vec<u8>, max_edge: usize) -> Result<(Rgb32f, SourceInfo), String> {
-    rayon::scope(move |_| load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, None).map(|(img, _, info)| (img, info)))
+    load_vec_with(bytes, max_edge, None)
+}
+
+/// [`load_vec`] with another raw decoder ([`AltRaw`]), tried first or where the built-in one would show the raw's
+/// embedded preview, as `alt.when` says. When neither develops the raw, the embedded preview's reason names both.
+pub fn load_vec_with(bytes: Vec<u8>, max_edge: usize, alt: Option<&AltRaw>) -> Result<(Rgb32f, SourceInfo), String> {
+    rayon::scope(move |_| load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, None, alt).map(|(img, _, info)| (img, info)))
+}
+
+/// When the other raw decoder ([`AltRaw`]) is tried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AltWhen {
+    /// Before the built-in decoder, which develops the raw only when the other one fails.
+    First,
+    /// Only for raws the built-in decoder can't develop (it would show their embedded preview).
+    OnFallback,
+}
+
+/// Another raw decoder (Apple's on a Mac, [`crate::apple_raw`]) for the raws the built-in one recognises.
+pub struct AltRaw<'a> {
+    pub when: AltWhen,
+    /// Its name in reasons ("Apple").
+    pub name: &'static str,
+    /// Develop the raw (from its bytes, or the file they came from) as the built-in decoder does: linear Rec.2020,
+    /// upright, white-balanced for its as-shot white, no larger than the given edge.
+    pub decode: &'a (dyn Fn(&[u8], usize) -> Result<(Rgb32f, SourceInfo), String> + Sync),
+    /// Describe the raw for import without developing it.
+    pub probe: &'a (dyn Fn(&[u8]) -> Result<AltFacts, String> + Sync),
+}
+
+/// What another raw decoder says about a raw for import ([`AltRaw::probe`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AltFacts {
+    /// Size of the developed picture, upright.
+    pub width: u32,
+    pub height: u32,
+    /// The as-shot white balance (Kelvin, tint) for absolute white balance; `None` for relative.
+    pub as_shot_wb: Option<(f64, f64)>,
+}
+
+/// The embedded preview's reason when the other decoder failed too: the built-in decoder's reason first (the UI shows
+/// the part before " (" as the raw variant), then the other decoder's.
+fn alt_reason(why: String, alt: &AltRaw, err: &str) -> String {
+    format!("{why} ({}: {err})", alt.name)
 }
 
 /// [`load_vec`] that also develops the photo's cached denoised picture (`spec`) from the same decode: the plain
 /// picture, the denoised one (`None` when it cannot be read or does not fit this raw: the plain one is then all
 /// there is) and the source facts. Both pictures are the same size.
 pub fn load_vec_pair(bytes: Vec<u8>, max_edge: usize, spec: &DenoiseSpec) -> Result<(Rgb32f, Option<Rgb32f>, SourceInfo), String> {
-    rayon::scope(move |_| load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, Some(spec)))
+    rayon::scope(move |_| load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, Some(spec), None))
 }
 
 /// The denoised camera RGB of `raw` from its cached product, as the plain development would have it: the default
@@ -261,11 +331,23 @@ fn load_bytes_now(
     bytes: std::borrow::Cow<'_, [u8]>,
     max_edge: usize,
     denoise: Option<&DenoiseSpec>,
+    alt: Option<&AltRaw>,
 ) -> Result<(Rgb32f, Option<Rgb32f>, SourceInfo), String> {
     if lightcraft_raw::probe(&bytes).is_some() {
+        if let Some(a) = alt.filter(|a| a.when == AltWhen::First) {
+            match (a.decode)(&bytes, max_edge) {
+                Ok((img, info)) => return Ok((img, None, info)),
+                Err(e) => log::info!("{} raw decoder: {e}; using the built-in decoder", a.name),
+            }
+        }
         let mut raw = match lightcraft_raw::decode(&bytes).map_err(|e| preview_reason(&bytes, e)) {
             Ok(r) => r,
             Err(Ok(why)) => {
+                let why = match alt.filter(|a| a.when == AltWhen::OnFallback).map(|a| (a, (a.decode)(&bytes, max_edge))) {
+                    Some((_, Ok((img, info)))) => return Ok((img, None, info)),
+                    Some((a, Err(e))) => alt_reason(why, a, &e),
+                    None => why,
+                };
                 // show the camera's embedded JPEG (rendered, not raw) until the variant is supported
                 return load_embedded_preview(&bytes, max_edge)
                     .map(|(img, info)| (img, None, info))
@@ -1214,5 +1296,119 @@ mod tests {
         assert!(s.quick_thumb_job(&job).is_none());
         assert_eq!(s.quick_view_job(id, 1600, true).unwrap().run().quick, Some(QuickSource::Small));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stand-in for another raw decoder ([`AltRaw`]): counts its calls; develops any raw as a 6 × 4 picture and
+    /// describes it as 60 × 40 at 5000 K, or fails.
+    #[derive(Default)]
+    pub(crate) struct FakeAlt {
+        pub decodes: std::sync::atomic::AtomicUsize,
+        pub probes: std::sync::atomic::AtomicUsize,
+        pub fail: bool,
+    }
+
+    impl FakeAlt {
+        pub fn failing() -> Self {
+            FakeAlt { fail: true, ..Default::default() }
+        }
+        pub fn decode(&self, _: &[u8], _: usize) -> Result<(Rgb32f, SourceInfo), String> {
+            self.decodes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.fail {
+                return Err("can't".into());
+            }
+            Ok((
+                Rgb32f::from_fn(6, 4, |x, y| [x as f32 * 0.1, y as f32 * 0.1, 0.25]),
+                SourceInfo { raw: true, as_shot_temp: 5000.0, ..Default::default() },
+            ))
+        }
+        pub fn probe(&self, _: &[u8]) -> Result<AltFacts, String> {
+            self.probes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.fail {
+                return Err("can't".into());
+            }
+            Ok(AltFacts { width: 60, height: 40, as_shot_wb: Some((5000.0, 3.0)) })
+        }
+        pub fn counts(&self) -> (usize, usize) {
+            use std::sync::atomic::Ordering::Relaxed;
+            (self.decodes.load(Relaxed), self.probes.load(Relaxed))
+        }
+    }
+
+    /// Run `f` with `fake` as the other decoder, tried as `when` says.
+    fn with_alt<R>(fake: &FakeAlt, when: AltWhen, f: impl FnOnce(&AltRaw) -> R) -> R {
+        let decode = |b: &[u8], e: usize| fake.decode(b, e);
+        let probe = |b: &[u8]| fake.probe(b);
+        f(&AltRaw { when, name: "Fake", decode: &decode, probe: &probe })
+    }
+
+    /// Issue #2: the other raw decoder is tried first or only where the built-in one would show the embedded preview;
+    /// when both fail the preview (or the error) names both; rendered files never reach it.
+    #[test]
+    fn another_raw_decoder_is_tried_first_or_on_fallback() {
+        let dng = crate::tests_xmp::synthetic_dng_with(None, Default::default());
+        let plain = load_vec(dng.clone(), 64).unwrap();
+        assert!(plain.1.raw);
+        // a raw the built-in decoder develops: untouched on fallback, the other's picture first
+        let fake = FakeAlt::default();
+        let r = with_alt(&fake, AltWhen::OnFallback, |a| load_vec_with(dng.clone(), 64, Some(a))).unwrap();
+        assert_eq!((r.0.width, r.0.height, fake.counts()), (plain.0.width, plain.0.height, (0, 0)));
+        let r = with_alt(&fake, AltWhen::First, |a| load_vec_with(dng.clone(), 64, Some(a))).unwrap();
+        assert_eq!((r.0.width, r.0.height, r.1.as_shot_temp, fake.counts()), (6, 4, 5000.0, (1, 0)));
+        // …and the built-in one when the other fails
+        let failing = FakeAlt::failing();
+        let r = with_alt(&failing, AltWhen::First, |a| load_vec_with(dng.clone(), 64, Some(a))).unwrap();
+        assert_eq!((r.0.width, r.0.height, r.1.raw, failing.counts()), (plain.0.width, plain.0.height, true, (1, 0)));
+        // a raw only the other decoder develops: its picture, either way, once
+        let cr3 = cr3_with_preview(48, 32);
+        for when in [AltWhen::OnFallback, AltWhen::First] {
+            let fake = FakeAlt::default();
+            let r = with_alt(&fake, when, |a| load_vec_with(cr3.clone(), 24, Some(a))).unwrap();
+            assert_eq!((r.0.width, r.0.height, r.1.raw, fake.counts()), (6, 4, true, (1, 0)), "{when:?}");
+        }
+        // both fail: the embedded preview, as without the other decoder…
+        let failing = FakeAlt::failing();
+        let r = with_alt(&failing, AltWhen::OnFallback, |a| load_vec_with(cr3.clone(), 24, Some(a))).unwrap();
+        assert_eq!((r.0.width, r.0.height, r.1.raw), (24, 16, false));
+        // …or, without a preview, an error naming both decoders' reasons
+        let bare = b"\0\0\0\x18ftypcrx \0\0\0\x01".to_vec();
+        let e = with_alt(&failing, AltWhen::OnFallback, |a| load_vec_with(bare.clone(), 24, Some(a))).unwrap_err();
+        assert!(e.contains("(Fake: can't)"), "{e}");
+        let fake = FakeAlt::default();
+        assert_eq!(with_alt(&fake, AltWhen::OnFallback, |a| load_vec_with(bare.clone(), 24, Some(a))).unwrap().0.width, 6);
+        // a JPEG never reaches it
+        let px = vec![90u8; 8 * 6 * 3];
+        let jpeg = encode_jpeg(&EncodeImage::new(8, 6, 3, Samples::U8(&px)), 90, ChromaSubsampling::S444, &EncodeMeta::default()).unwrap();
+        let fake = FakeAlt::default();
+        for when in [AltWhen::OnFallback, AltWhen::First] {
+            let r = with_alt(&fake, when, |a| load_vec_with(jpeg.clone(), 64, Some(a))).unwrap();
+            assert_eq!((r.0.width, r.0.height, r.1.raw), (8, 6, false));
+            assert!(with_alt(&fake, when, |a| probe_bytes_with("x.jpg", &jpeg, Some(a))).unwrap().preview_only.is_none());
+        }
+        assert_eq!(fake.counts(), (0, 0));
+    }
+
+    /// Issue #2: a raw only the other decoder can develop imports as a raw that develops, described by it; one the
+    /// built-in decoder reads keeps its own description; when the other fails too, it is preview-only with both reasons.
+    #[test]
+    fn another_raw_decoder_describes_the_raws_the_built_in_one_cannot() {
+        let cr3 = cr3_with_preview(48, 32);
+        let fake = FakeAlt::default();
+        let p = with_alt(&fake, AltWhen::OnFallback, |a| probe_bytes_with("IMG_1.CR3", &cr3, Some(a))).unwrap();
+        assert_eq!((p.width, p.height, p.kind, p.format.as_str(), p.as_shot_wb), (60, 40, MediaKind::Raw, "CR3", Some((5000.0, 3.0))));
+        assert_eq!(p.preview_only, None);
+        assert_eq!(fake.counts(), (0, 1), "described, not developed");
+        let failing = FakeAlt::failing();
+        let p = with_alt(&failing, AltWhen::First, |a| probe_bytes_with("IMG_1.CR3", &cr3, Some(a))).unwrap();
+        assert_eq!((p.width, p.height), (48, 32), "from the embedded preview");
+        let why = p.preview_only.unwrap();
+        let built_in = probe_bytes("IMG_1.CR3", &cr3).unwrap().preview_only.unwrap();
+        assert_eq!(why, format!("{built_in} (Fake: can't)"));
+        assert_eq!(why.split(" (").next(), built_in.split(" (").next(), "the UI's variant name stays the built-in decoder's");
+        let dng = crate::tests_xmp::synthetic_dng_with(None, Default::default());
+        let fake = FakeAlt::default();
+        let p = with_alt(&fake, AltWhen::First, |a| probe_bytes_with("x.dng", &dng, Some(a))).unwrap();
+        let built_in = probe_bytes("x.dng", &dng).unwrap();
+        assert_eq!((p.width, p.height, p.as_shot_wb, p.preview_only), (built_in.width, built_in.height, built_in.as_shot_wb, None));
+        assert_eq!(fake.counts(), (0, 0));
     }
 }

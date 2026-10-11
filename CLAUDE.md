@@ -55,6 +55,7 @@ cargo run --release -p lightcraft-cli -- --help   # run (command chains), render
   touch user settings), `LIGHTCRAFT_LOG`, `LIGHTCRAFT_DENOISE_MODELS`, `LIGHTCRAFT_CAMERA_PROFILES`,
   `LIGHTCRAFT_EXPORT_THREADS` (photos a batch export renders at once; 1 = one at a time),
   `LIGHTCRAFT_DENOISE_GPU=auto|mps|wgpu` / `LIGHTCRAFT_DENOISE_PRECISION=f32|f16` (AI denoise card runner on a Mac),
+  `LIGHTCRAFT_RAW_DECODER=auto|apple|builtin` (Apple's raw decoder on a Mac, `docs/apple-raw.md`),
   `LIGHTCRAFT_MEMORY_MB` (memory budget).
 
 ## Never crash (outranks feature work)

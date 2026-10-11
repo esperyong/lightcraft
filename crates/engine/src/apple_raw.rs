@@ -879,4 +879,74 @@ mod tests {
         assert!(s.media.raw.status()["identity"] == json!("stub-1"));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Issue #2: where Apple's decoder may develop a raw, its renders (thumbnail, view and variant caches, job keys) and
+    /// sources are told apart from the built-in decoder's; JPEGs, raws shown from their embedded preview, and every
+    /// photo in built-in mode keep the keys they had; a source loaded before the decoder changed is not taken.
+    #[test]
+    fn renders_and_sources_carry_the_raw_decoder() {
+        use crate::media::{SourceLevel, content_key};
+        use lightcraft_codecs::{ChromaSubsampling, EncodeImage, EncodeMeta, Samples, encode_jpeg};
+        use lightcraft_preview::Hasher128;
+        use serde_json::json;
+        if env_mode().is_some() {
+            eprintln!("skipped: {ENV} is set");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("lc-apple-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (lib, files) = (dir.join("lib"), dir.join("files"));
+        std::fs::create_dir_all(&files).unwrap();
+        let (raw_path, jpeg_path) = (files.join("IMG_0001.CR3"), files.join("IMG_0002.jpg"));
+        std::fs::write(&raw_path, crate::files::tests::cr3_with_preview(96, 64)).unwrap();
+        let px = vec![120u8; 32 * 24 * 3];
+        std::fs::write(
+            &jpeg_path,
+            encode_jpeg(&EncodeImage::new(32, 24, 3, Samples::U8(&px)), 90, ChromaSubsampling::S444, &EncodeMeta::default()).unwrap(),
+        )
+        .unwrap();
+        let mut s = crate::Session::new().with_fs_and(Some(Stub::new().apple(Limits::default(), None)));
+        s.open_library(&lib, false).unwrap();
+        let r = s.execute("library.import", &json!({"paths": [raw_path.to_string_lossy(), jpeg_path.to_string_lossy()]})).unwrap();
+        let ids: Vec<_> = r["imported"].as_array().unwrap().iter().map(|v| lightcraft_catalog::PhotoId(v.as_u64().unwrap())).collect();
+        let (raw, jpeg) = (ids[0], ids[1]);
+        let keys = |s: &mut crate::Session, id| {
+            let t = s.thumb_job(id, 256).unwrap();
+            let l = s.loupe_job(id, 300, 200, true).unwrap();
+            let v = s.variant_job(id, &lightcraft_develop::DevelopSettings::default(), 128).unwrap();
+            let q = s.quick_view_job(id, 300, true).unwrap();
+            (t.key, t.cache.map(|c| c.1), l.view_cache.map(|c| c.1), v.cache.map(|c| c.1), q.key, t.source_key)
+        };
+        let (auto_raw, auto_jpeg) = (keys(&mut s, raw), keys(&mut s, jpeg));
+        assert!(s.media.raw.set_mode(Mode::Builtin));
+        let (built_raw, built_jpeg) = (keys(&mut s, raw), keys(&mut s, jpeg));
+        assert_eq!(auto_jpeg, built_jpeg);
+        assert!(
+            auto_raw.0 != built_raw.0
+                && auto_raw.1 != built_raw.1
+                && auto_raw.2 != built_raw.2
+                && auto_raw.3 != built_raw.3
+                && auto_raw.4 != built_raw.4
+                && auto_raw.5 != built_raw.5
+        );
+        // built-in only: the key of old
+        let p = s.catalog.photo(raw).unwrap().clone();
+        assert_eq!(s.media.decoder_salt(&p), 0);
+        assert_eq!(built_raw.5, Some(Hasher128::new().str(&content_key(&p)).finish()));
+        // a raw shown from its embedded preview looks the same in every mode; developed, it is another picture of the
+        // same content
+        assert!(s.media.raw.set_mode(Mode::Auto));
+        let shown = lightcraft_catalog::Photo { preview_only: Some("CR3 variant".into()), ..(*p).clone() };
+        assert!(s.media.decoder_salt(&p) != 0 && s.media.decoder_salt(&shown) == 0);
+        // a source loaded by the built-in decoder is not taken once Apple's is in use (and the other way round)
+        assert!(s.media.raw.set_mode(Mode::Builtin));
+        let before = s.render_job(raw, 64, 64, false, true).unwrap().run();
+        assert!(s.media.raw.set_mode(Mode::Auto));
+        s.accept(&before);
+        assert!(!s.media.has_source(raw, before.level));
+        let now = s.render_job(raw, 64, 64, false, true).unwrap().run();
+        s.accept(&now);
+        assert!(s.media.has_source(raw, now.level) && now.level == SourceLevel::Thumb);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -949,4 +949,29 @@ mod tests {
         assert!(s.media.has_source(raw, now.level) && now.level == SourceLevel::Thumb);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn the_raw_decoder_command_sets_the_mode_and_reports() {
+        use serde_json::json;
+        // without Apple's decoder (Linux, or macOS before 12): built-in, and why
+        let mut s = crate::Session::new().with_fs_and(None);
+        let r = s.execute("app.rawDecoder", &json!({})).unwrap();
+        assert_eq!((r["mode"].as_str(), r["effective"].as_str(), r["available"].as_bool()), (Some("auto"), Some("builtin"), Some(false)), "{r}");
+        assert!(r["reason"].as_str().is_some_and(|w| w.contains("macOS")), "{r}");
+        assert_eq!(s.execute("app.rawDecoder", &json!({"mode": "builtin"})).unwrap()["mode"], "builtin");
+        for bad in [json!({"mode": "photoshop"}), json!({"mode": 2})] {
+            let e = s.execute("app.rawDecoder", &bad).unwrap_err().to_string();
+            assert!(e.contains("auto, apple or builtin"), "{e}");
+        }
+        assert_eq!(s.execute("app.rawDecoder", &json!({"clearSkipped": true})).unwrap()["skipped"], json!([]));
+        // with it: the mode chosen is the one used (unless the environment forces one)
+        let mut s = crate::Session::new().with_fs_and(Some(Stub::new().apple(Limits::default(), None)));
+        let r = s.execute("app.rawDecoder", &json!({"mode": "apple"})).unwrap();
+        assert_eq!(
+            (r["mode"].as_str(), r["available"].as_bool(), r["identity"].as_str(), r["reason"].as_str()),
+            (Some("apple"), Some(true), Some("stub-1"), None),
+            "{r}"
+        );
+        assert_eq!(r["effective"].as_str(), Some(env_mode().unwrap_or(Mode::Apple).name()));
+    }
 }

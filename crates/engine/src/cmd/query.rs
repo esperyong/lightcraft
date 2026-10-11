@@ -210,6 +210,21 @@ pub fn specs() -> Vec<CommandSpec> {
                 "lastFallback": lightcraft_gpu::last_fallback(),
             }))
         }),
+        cmd!(query "app.rawDecoder", "Raw Decoder", [], None, "{mode?: auto | apple | builtin, clearSkipped?: bool} — which decoder develops raws: auto (the default: on a Mac with macOS 12+, Apple's decoder for the raws LightCraft's own can't develop), apple (Apple's first for every raw but DNG, LightCraft's when it fails) or builtin (LightCraft's only); LIGHTCRAFT_RAW_DECODER forces one for the process. Raws imported as preview-only develop after Photo ▸ Reload from Disk. `clearSkipped` gives the files Apple's decoder crashed on another try. Returns {mode, effective, available, reason (why Apple's decoder is not used), overriddenBy, identity, lastFallback (the latest raw Apple's decoder did not develop, and why), skipped (files it crashed on, left to the built-in decoder)}", always, |s, p| {
+            const C: &str = "app.rawDecoder";
+            if let Some(m) = p.get("mode") {
+                let name = m.as_str().ok_or_else(|| bad(C, "`mode` must be auto, apple or builtin"))?;
+                let mode = crate::apple_raw::Mode::parse(name).ok_or_else(|| bad(C, format!("unknown mode `{name}`: auto, apple or builtin")))?;
+                // sources decoded by the other decoder go; renders follow by their keys
+                if s.media.raw.set_mode(mode) {
+                    s.media.clear_sources();
+                }
+            }
+            if p.get("clearSkipped").and_then(Value::as_bool) == Some(true) {
+                s.media.raw.clear_skipped();
+            }
+            Ok(s.media.raw.status())
+        }),
         cmd!(query "library.memory", "Memory Usage", [], None, "{} — bytes held by each cache (decoded sources, rendered previews, GPU buffers; heap when instrumented)", always, |s, _| {
             Ok(serde_json::to_value(s.memory_report()).unwrap_or_default())
         }),

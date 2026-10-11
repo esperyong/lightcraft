@@ -2679,6 +2679,15 @@ mod tests {
         h.request("ui.clickWidget", json!({"id": "button:settingsMemory-0"}), t);
         h.step();
         assert_eq!(lightcraft_engine::memory::budget(), lightcraft_engine::memory::default_budget(), "back to automatic");
+        // the raw decoder (offered on a Mac, where Apple's is) goes through app.rawDecoder
+        if cfg!(target_os = "macos") {
+            h.request("ui.clickWidget", json!({"id": "button:settingsRawDecoder-2"}), t);
+        } else {
+            h.app.ui.settings.raw_decoder = crate::state::RawDecoder::Builtin;
+        }
+        assert_eq!(h.app.ui.settings.raw_decoder, crate::state::RawDecoder::Builtin);
+        h.step();
+        assert_eq!(h.app.session.media.raw.mode(), lightcraft_engine::apple_raw::Mode::Builtin);
         // Import: per-camera defaults
         h.request("ui.clickWidget", json!({"id": "button:settingsTab-import"}), t);
         h.request("ui.clickWidget", json!({"id": "check:settings.perCamera"}), t);

@@ -262,6 +262,8 @@ pub struct LightcraftApp {
     gpu_applied: Option<bool>,
     /// The memory budget setting last applied (MB, 0 = automatic).
     memory_applied: Option<u32>,
+    /// The raw decoder setting last applied (`app.rawDecoder`).
+    raw_decoder_applied: Option<state::RawDecoder>,
     /// The library failed to open at launch: the blocking window, then the temporary-session
     /// banner (issue #100). Cleared once a library opens.
     pub library_problem: Option<panels::library_problem::LibraryProblem>,
@@ -325,6 +327,7 @@ impl LightcraftApp {
             hover_preview: None,
             window_is_fullscreen: false,
             gpu_applied: None,
+            raw_decoder_applied: None,
             memory_applied: None,
             library_problem: None,
             model_setup: Default::default(),
@@ -844,6 +847,11 @@ impl LightcraftApp {
             let _ = self.session.execute("app.memoryBudget", &serde_json::json!({"mb": mb}));
         }
         self.memory_applied = Some(mb);
+        let decoder = self.ui.settings.raw_decoder;
+        if self.raw_decoder_applied != Some(decoder) {
+            self.raw_decoder_applied = Some(decoder);
+            let _ = self.session.execute("app.rawDecoder", &serde_json::json!({"mode": decoder.name()}));
+        }
         if let Some(fs) = ctx.input(|i| i.viewport().fullscreen) {
             self.window_is_fullscreen = fs;
         }

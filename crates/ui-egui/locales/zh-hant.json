@@ -1743,5 +1743,13 @@
   "Utility Image (AI: screenshot, receipt…)": "實用圖片（AI：截圖、收據等）",
   "AI Analysis Status": "AI 分析狀態",
   "Stop AI Analysis": "停止 AI 分析",
-  "Add AI Labels as Keywords": "將 AI 標籤加入為關鍵字"
+  "Add AI Labels as Keywords": "將 AI 標籤加入為關鍵字",
+  "Raw Decoder": "RAW 解碼器",
+  "Raw decoder": "RAW 解碼器",
+  "Built-in": "內建",
+  "Apple's raw decoder needs macOS 12 or later.": "Apple 的 RAW 解碼器需要 macOS 12 或更新版本。",
+  "LIGHTCRAFT_RAW_DECODER overrides this setting.": "環境變數 LIGHTCRAFT_RAW_DECODER 優先於此設定。",
+  "Apple's raw decoder was turned off for this session: its decodes kept taking too long.": "Apple 的 RAW 解碼器在本次執行中已關閉：它的解碼多次逾時。",
+  "Automatic develops the raws LightCraft can't decode yet (such as newer Canon CR3 and compressed Olympus ORF) with Apple's raw decoder; Apple develops every raw but DNG with it. For raws already imported as preview only, use Photo ▸ Reload from Disk.": "「自動」以 Apple 的 RAW 解碼器顯影 LightCraft 尚無法解碼的 RAW（例如較新的 Canon CR3、壓縮的 Olympus ORF）；「Apple」以它顯影 DNG 以外的所有 RAW。已以「僅供預覽」匯入的 RAW，請使用「照片 → 從磁碟重新載入」。",
+  "Photo ▸ Reload from Disk develops it with Apple's raw decoder.": "「照片 → 從磁碟重新載入」會以 Apple 的 RAW 解碼器顯影它。"
 }

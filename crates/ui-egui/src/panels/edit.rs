@@ -84,6 +84,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         wb.tint = 0.0;
     }
     let preview_only = app.session.catalog.photo(id).and_then(|p| p.preview_only.clone());
+    let apple_raw = app.session.media.raw.effective() != lightcraft_engine::apple_raw::Mode::Builtin;
 
     if app.ui.histogram {
         histogram(app, ui, id);
@@ -115,7 +116,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     });
     if let Some(why) = &preview_only {
         egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 12 }).show(ui, |ui| {
-            crate::widgets::preview_only_notice(ui, "edit", why);
+            crate::widgets::preview_only_notice(ui, "edit", why, apple_raw);
         });
     }
     let n = app.session.selection.ids.len();

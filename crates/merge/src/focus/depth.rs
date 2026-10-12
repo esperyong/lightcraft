@@ -107,7 +107,7 @@ impl Depth {
         let k = pos.min(u16::MAX as usize) as u16;
         let w = self.w.max(1);
         let rgb = &frame.rgb.data;
-        let flags = &frame.flags;
+        let flags = frame.flags;
         let st = (
             self.best.par_chunks_mut(w),
             self.fm_best.par_chunks_mut(w),
@@ -305,7 +305,7 @@ impl Resolved {
         let k = pos as f32;
         let w = self.image.width.max(1);
         let interp = self.interpolate;
-        let (need, depth, rgb, flags) = (&self.need, &self.depth.data, &frame.rgb.data, &frame.flags);
+        let (need, depth, rgb, flags) = (&self.need, &self.depth.data, &frame.rgb.data, frame.flags);
         self.image.data.par_chunks_mut(w).zip(self.wsum.par_chunks_mut(w)).enumerate().for_each(|(y, (row, ws))| {
             for x in 0..row.len() {
                 let i = y * w + x;
@@ -351,10 +351,13 @@ impl Resolved {
 mod tests {
     use super::*;
     use crate::focus::measure::VALID;
-    use std::borrow::Cow;
 
-    fn frame(w: usize, h: usize, v: [f32; 3]) -> Warped<'static> {
-        Warped { rgb: Cow::Owned(Rgb32f::filled(w, h, v)), flags: vec![VALID; w * h] }
+    fn frame(w: usize, h: usize, v: [f32; 3]) -> (Rgb32f, Vec<u8>) {
+        (Rgb32f::filled(w, h, v), vec![VALID; w * h])
+    }
+
+    fn warped(f: &(Rgb32f, Vec<u8>)) -> Warped<'_> {
+        Warped { rgb: &f.0, flags: &f.1 }
     }
 
     #[test]
@@ -364,7 +367,7 @@ mod tests {
         // focus profile peaking between frames 2 and 3 (closer to 2)
         let fms = [0.01f32, 0.05, 0.5, 0.4, 0.05, 0.01];
         for (k, f) in fms.iter().enumerate() {
-            d.add(k, &frame(w, h, [k as f32 * 0.1; 3]), &Plane::filled(w, h, *f), 0.005);
+            d.add(k, &warped(&frame(w, h, [k as f32 * 0.1; 3])), &Plane::filled(w, h, *f), 0.005);
         }
         let r = d.finish(DepthParams { radius: 1, smoothing: 0.0, interpolate: true });
         assert!(r.needed().is_empty());
@@ -392,13 +395,13 @@ mod tests {
                     0.1
                 }
             });
-            d.add(k, &frame(w, h, [k as f32 * 0.1; 3]), &fm, 0.05);
+            d.add(k, &warped(&frame(w, h, [k as f32 * 0.1; 3])), &fm, 0.05);
         }
         let mut r = d.finish(DepthParams { radius: 1, smoothing: 2.0, interpolate: false });
         let needed = r.needed();
         assert!(!needed.is_empty());
         for k in needed {
-            r.add(k, &frame(w, h, [k as f32 * 0.1; 3]));
+            r.add(k, &warped(&frame(w, h, [k as f32 * 0.1; 3])));
         }
         let (img, depth, _) = r.done();
         // every pixel's colour is the colour of the frame its depth names

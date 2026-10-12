@@ -386,6 +386,9 @@ pub struct FocusStacker {
     reference_meta: Option<RefMeta>,
     warnings: Vec<String>,
     spans: Spans,
+    /// Frame-sized buffers reused from frame to frame.
+    frame_buf: measure::FrameBuf,
+    measure_buf: measure::MeasureBuf,
 }
 
 /// `seq` thinned to every n-th entry, keeping the first and the last.
@@ -441,11 +444,13 @@ impl FocusStacker {
             reference_meta: None,
             warnings: Vec::new(),
             spans,
+            frame_buf: measure::FrameBuf::default(),
+            measure_buf: measure::MeasureBuf::default(),
         })
     }
 
-    /// Bytes of image-sized state held now (alignment images, the method's per-pixel state); the
-    /// per-frame bookkeeping (≈ 12 KB a frame) is not counted.
+    /// Bytes of image-sized state held now (alignment images, the method's per-pixel state, the
+    /// reused per-frame buffers); the per-frame bookkeeping (≈ 12 KB a frame) is not counted.
     pub fn state_bytes(&self) -> usize {
         let fuser = match &self.fuser {
             Some(Fuser::Average(a)) => a.bytes(),
@@ -453,7 +458,11 @@ impl FocusStacker {
             Some(Fuser::Pyramid(p)) => p.bytes(),
             None => 0,
         };
-        fuser + self.aligner.as_ref().map_or(0, align::Aligner::bytes) + self.resolved.as_ref().map_or(0, depth::Resolved::bytes)
+        fuser
+            + self.aligner.as_ref().map_or(0, align::Aligner::bytes)
+            + self.resolved.as_ref().map_or(0, depth::Resolved::bytes)
+            + self.frame_buf.bytes()
+            + self.measure_buf.bytes()
     }
 
     fn cap(&self, edge: usize) -> Option<usize> {
@@ -598,17 +607,17 @@ impl FocusStacker {
         }
         let h = g.p.get(pos).copied().unwrap_or(Homography::IDENTITY);
         let ig = g.inv_gain.get(pos).copied().unwrap_or([1.0; 3]);
-        let warped = measure::warp(img, &h, g.rect, ig, clip, self.opts.bicubic);
+        let warped = measure::warp(img, &h, g.rect, ig, clip, self.opts.bicubic, &mut self.frame_buf);
         let r = self.opts.radius_px();
         match self.fuser.as_mut() {
             Some(Fuser::Average(a)) => {
-                let fm = measure::focus_measure(&warped, r);
-                a.add(pos, &warped, &fm);
+                let fm = measure::focus_measure(&warped, r, &mut self.measure_buf);
+                a.add(pos, &warped, fm);
             }
             Some(Fuser::Depth(d)) => {
-                let fm = measure::focus_measure(&warped, r);
-                let noise = measure::noise_floor(&fm);
-                d.add(pos, &warped, &fm, noise);
+                let fm = measure::focus_measure(&warped, r, &mut self.measure_buf);
+                let noise = measure::noise_floor(fm);
+                d.add(pos, &warped, fm, noise);
             }
             Some(Fuser::Pyramid(p)) => p.add(pos, &warped),
             None => {}
@@ -624,7 +633,7 @@ impl FocusStacker {
         }
         let h = g.p.get(pos).copied().unwrap_or(Homography::IDENTITY);
         let ig = g.inv_gain.get(pos).copied().unwrap_or([1.0; 3]);
-        let warped = measure::warp(img, &h, g.rect, ig, clip, self.opts.bicubic);
+        let warped = measure::warp(img, &h, g.rect, ig, clip, self.opts.bicubic, &mut self.frame_buf);
         r.add(pos, &warped);
         Ok(())
     }

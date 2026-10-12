@@ -5,13 +5,12 @@
 //! mean of the frames, which also averages their noise.
 //!
 //! State: 20 bytes per output pixel (weighted RGB sum, weight sum, weighted position sum for the
-//! depth estimate), independent of the number of frames.
+//! depth estimate) plus 12 of reused scratch, independent of the number of frames.
 
-use lightcraft_raster::blur::gaussian;
 use lightcraft_raster::{Plane, Rgb32f};
 use rayon::prelude::*;
 
-use super::measure::Warped;
+use super::measure::{Warped, ensure, gaussian_in_place};
 
 pub struct Average {
     w: usize,
@@ -20,23 +19,37 @@ pub struct Average {
     wsum: Vec<f32>,
     dsum: Vec<f32>,
     sigma: f32,
+    /// The frame's weights and blur scratch (reused).
+    wt: Plane,
+    t1: Plane,
+    t2: Plane,
 }
 
 impl Average {
     pub fn new(w: usize, h: usize, sigma: f32) -> Average {
-        Average { w, h, sum: vec![[0.0; 3]; w * h], wsum: vec![0.0; w * h], dsum: vec![0.0; w * h], sigma }
+        Average {
+            w,
+            h,
+            sum: vec![[0.0; 3]; w * h],
+            wsum: vec![0.0; w * h],
+            dsum: vec![0.0; w * h],
+            sigma,
+            wt: Plane::new(0, 0),
+            t1: Plane::new(0, 0),
+            t2: Plane::new(0, 0),
+        }
     }
 
     pub fn bytes(&self) -> usize {
-        self.sum.len() * 12 + self.wsum.len() * 4 + self.dsum.len() * 4
+        self.sum.len() * 12 + self.wsum.len() * 4 + self.dsum.len() * 4 + (self.wt.data.len() + self.t1.data.len() + self.t2.data.len()) * 4
     }
 
     /// Add the frame at sequence position `pos` with its focus measure.
     pub fn add(&mut self, pos: usize, frame: &Warped, fm: &Plane) {
-        let mut wt = fm.map(|f| f * f + 1e-10);
-        if self.sigma > 0.3 {
-            wt = gaussian(&wt, self.sigma);
-        }
+        ensure(&mut self.wt, fm.width, fm.height);
+        self.wt.data.par_iter_mut().zip(fm.data.par_iter()).for_each(|(o, f)| *o = f * f + 1e-10);
+        gaussian_in_place(&mut self.wt, self.sigma, &mut self.t1, &mut self.t2);
+        let wt = &self.wt;
         let w = self.w.max(1);
         let rgb = &frame.rgb.data;
         let flags = &frame.flags;

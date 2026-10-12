@@ -107,6 +107,12 @@ scale in `BaselineExposure`; raw sources keep their DNG colour tags (camera RGB)
 
 ## Measured (synthetic tests, `cargo test -p lightcraft-merge`)
 
+- Focus stack speed on Helicon Focus's terms (100 frames of 5616 × 3744 in memory, MPixel/s):
+  `cargo run --release -p lightcraft-merge --example focus_bench` (or `cargo xtask bench --focus`,
+  which records it in `target/bench/history.jsonl`; `SIZE=1920x1280 FRAMES=30` for a small machine).
+  Every frame-sized buffer is reused from frame to frame (fresh ones cost more in page faults than
+  the arithmetic). Numbers that count are from an Apple M5 (#18); Helicon's own table: M5 753 MPixel/s
+  for method B.
 - Focus stack, 12 frames 640 × 420 (defocus 1.2 px per frame, a front disc as a depth step, breathing,
   drift, noise): best single frame 25.7 dB PSNR; A 32.6 dB, B 34.7 dB, C 35.2 dB; B's depth error
   0.1 frames where confident; alignment ≤ 0.21 px with 0.4 %/frame breathing, 1.5 px drift, 0.15°

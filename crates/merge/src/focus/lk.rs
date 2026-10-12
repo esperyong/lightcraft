@@ -111,7 +111,7 @@ pub fn ncc(t: &Plane, i: &Plane, h: &Homography) -> f32 {
         return 0.0;
     }
     let (mx, my) = margins(w, ht);
-    let step = ((w * ht) / 200_000).max(1);
+    let step = ((w * ht) / 50_000).max(1);
     let pts: Vec<(f32, f32)> = (my..ht - my)
         .step_by(step.isqrt().max(1))
         .flat_map(|y| (mx..w - mx).step_by(step.isqrt().max(1)).map(move |x| (x as f32 + 0.5, y as f32 + 0.5)))
@@ -170,8 +170,9 @@ fn sample(img: &Plane, x: f32, y: f32) -> Option<f32> {
     Some(top + (bot - top) * ty)
 }
 
-/// Local contrast: the modified Laplacian averaged over 5 × 5.
-fn contrast(p: &Plane) -> Plane {
+/// Local contrast: the modified Laplacian averaged over 5 × 5 (one map per pyramid level, made
+/// once per frame: each frame is aligned twice, to its neighbours on both sides).
+pub fn contrast(p: &Plane) -> Plane {
     let (w, h) = (p.width, p.height);
     let mut out = Plane::new(w, h);
     if w >= 3 && h >= 3 {
@@ -197,28 +198,45 @@ fn template_samples(t: &Plane, params: &[Param], centre: (f64, f64), radius: f64
     }
     let (mx, my) = margins(w, h);
     let at = |x: usize, y: usize| t.data[y * w + x];
-    let mut pts: Vec<(usize, usize, f32, f32)> = (my.max(1)..(h - my).min(h - 1))
+    let grad = |x: usize, y: usize| (0.5 * (at(x + 1, y) - at(x - 1, y)), 0.5 * (at(x, y + 1) - at(x, y - 1)));
+    let (xs, ys) = (mx.max(1)..(w - mx).min(w - 1), my.max(1)..(h - my).min(h - 1));
+    let area = xs.len() * ys.len();
+    // large levels: candidates on a grid (at most 4 × the samples kept), and only gradients above
+    // the strength a sparse subsample says keeps about MAX_SAMPLES of them
+    let stride = ((area as f64 / (4 * MAX_SAMPLES) as f64).sqrt().floor() as usize).max(1);
+    let candidates = area / (stride * stride);
+    let thr = if candidates > MAX_SAMPLES {
+        let sub = (stride * ((candidates / 20_000) as f64).sqrt().ceil() as usize).max(1);
+        let mut g: Vec<f32> = ys
+            .clone()
+            .step_by(sub)
+            .flat_map(|y| xs.clone().step_by(sub).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let (gx, gy) = grad(x, y);
+                gx * gx + gy * gy
+            })
+            .collect();
+        g.sort_by(|a, b| b.total_cmp(a));
+        let keep = MAX_SAMPLES as f64 / candidates as f64;
+        g.get(((g.len() as f64 * keep) as usize).min(g.len().saturating_sub(1))).copied().unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    let mut pts: Vec<(usize, usize, f32, f32)> = ys
+        .clone()
+        .step_by(stride)
+        .collect::<Vec<_>>()
         .into_par_iter()
         .flat_map_iter(|y| {
-            (mx.max(1)..(w - mx).min(w - 1)).map(move |x| {
-                let gx = 0.5 * (at(x + 1, y) - at(x - 1, y));
-                let gy = 0.5 * (at(x, y + 1) - at(x, y - 1));
-                (x, y, gx, gy)
+            xs.clone().step_by(stride).filter_map(move |x| {
+                let (gx, gy) = grad(x, y);
+                (gx * gx + gy * gy >= thr).then_some((x, y, gx, gy))
             })
         })
         .collect();
     if pts.len() > MAX_SAMPLES {
-        // keep the strongest gradients: threshold from a sorted subsample
-        let step = (pts.len() / 20_000).max(1);
-        let mut g: Vec<f32> = pts.iter().step_by(step).map(|p| p.2 * p.2 + p.3 * p.3).collect();
-        g.sort_by(|a, b| b.total_cmp(a));
-        let keep = MAX_SAMPLES as f64 / pts.len() as f64;
-        let thr = g.get(((g.len() as f64 * keep) as usize).min(g.len().saturating_sub(1))).copied().unwrap_or(0.0);
-        pts.retain(|p| p.2 * p.2 + p.3 * p.3 >= thr);
-        if pts.len() > MAX_SAMPLES {
-            let s = pts.len().div_ceil(MAX_SAMPLES);
-            pts = pts.into_iter().step_by(s).collect();
-        }
+        let s = pts.len().div_ceil(MAX_SAMPLES);
+        pts = pts.into_iter().step_by(s).collect();
     }
     let n = pts.len() as f64;
     if n < 16.0 {
@@ -304,8 +322,9 @@ fn corner_motion(h: &Homography, w: f64, ht: f64) -> f64 {
         .fold(0.0, f64::max)
 }
 
-/// Refine `init` on one level. Returns the warp and the NCC of the last iteration.
-fn refine_level(t: &Plane, i: &Plane, init: Homography, dof: Dof, iters: usize) -> (Homography, f32) {
+/// Refine `init` on one level (`tc`, `ic`: the images' [`contrast`] maps). Returns the warp and
+/// the NCC of the last iteration.
+fn refine_level(t: &Plane, i: &Plane, tc: &Plane, ic: &Plane, init: Homography, dof: Dof, iters: usize) -> (Homography, f32) {
     let params = dof.params();
     let k = params.len();
     let centre = (t.width as f64 / 2.0, t.height as f64 / 2.0);
@@ -316,13 +335,13 @@ fn refine_level(t: &Plane, i: &Plane, init: Homography, dof: Dof, iters: usize) 
     }
     let (w, ht) = (t.width as f64, t.height as f64);
     // pixels much sharper in one frame than in the other mostly show the focus change, not motion
-    let (ct, ci) = (contrast(t), contrast(i));
+    let (ct, ci) = (tc, ic);
     let sw: Vec<f32> = samples
         .par_iter()
         .map(|s| {
             let (x, y) = init.apply_real(s.x as f64, s.y as f64);
-            let a = crate::features::bilinear(&ct, s.x, s.y);
-            let b = crate::features::bilinear(&ci, x as f32, y as f32);
+            let a = crate::features::bilinear(ct, s.x, s.y);
+            let b = crate::features::bilinear(ci, x as f32, y as f32);
             let r = a.min(b) / a.max(b).max(1e-9);
             r.powi(4)
         })
@@ -403,11 +422,20 @@ fn refine_level(t: &Plane, i: &Plane, init: Homography, dof: Dof, iters: usize) 
     (h, ncc)
 }
 
-/// Align the image pyramid `i` to the template pyramid `t` (level 0 first, each level half the
-/// size of the previous one), starting from `init` (level-0 coordinates). Iterations per level,
-/// coarse to fine: 30, 30, 20, 15, 15…
-pub fn align(t: &[Plane], i: &[Plane], init: &Homography, dof: Dof) -> Fit {
-    let levels = t.len().min(i.len());
+/// A grey pyramid (level 0 first, each level half the size of the previous one) and its
+/// [`contrast`] maps.
+#[derive(Clone, Copy)]
+pub struct Pyramid<'a> {
+    pub grey: &'a [Plane],
+    pub contrast: &'a [Plane],
+}
+
+/// Align the image pyramid `i` to the template pyramid `t`, starting from `init` (level-0
+/// coordinates). Iterations per level, coarse to fine: 30, 30, 20, 15, 15…
+pub fn align(t: Pyramid, i: Pyramid, init: &Homography, dof: Dof) -> Fit {
+    let (tc, ic) = (t.contrast, i.contrast);
+    let (t, i) = (t.grey, i.grey);
+    let levels = t.len().min(i.len()).min(tc.len()).min(ic.len());
     if levels == 0 || !dof.any() {
         let ncc = match (t.first(), i.first()) {
             (Some(a), Some(b)) => ncc(a, b, init),
@@ -420,7 +448,7 @@ pub fn align(t: &[Plane], i: &[Plane], init: &Homography, dof: Dof) -> Fit {
         let f = (1u64 << l) as f64;
         let hl = scale_homography(&h, f);
         let iters = [30, 30, 20][..].get(step).copied().unwrap_or(15);
-        let (r, _) = refine_level(&t[l], &i[l], hl, dof, iters);
+        let (r, _) = refine_level(&t[l], &i[l], &tc[l], &ic[l], hl, dof, iters);
         h = scale_homography(&r, 1.0 / f);
     }
     Fit { h, ncc: ncc(&t[0], &i[0], &h) }
@@ -438,6 +466,14 @@ mod tests {
             0.5 + 0.2 * (x * 0.21).sin() * (y * 0.17).cos() + 0.15 * ((x + 2.0 * y) * 0.09).sin() + 0.1 * ((x * x + y * y).sqrt() * 0.3).sin()
         });
         gaussian(&p, 1.0)
+    }
+
+    fn contrasts(p: &[Plane]) -> Vec<Plane> {
+        p.iter().map(contrast).collect()
+    }
+
+    fn pyr<'a>(g: &'a [Plane], c: &'a [Plane]) -> Pyramid<'a> {
+        Pyramid { grey: g, contrast: c }
     }
 
     fn pyramid(p: Plane) -> Vec<Plane> {
@@ -467,7 +503,9 @@ mod tests {
         let (cx, cy) = (280.0, 200.0);
         let truth = Homography([c, -s, cx - (c * cx - s * cy) + 3.2, s, c, cy - (s * cx + c * cy) - 1.7, 0.0, 0.0, 1.0]);
         let img = warp(&big, &truth.inverse().unwrap());
-        let fit = align(&pyramid(big.clone()), &pyramid(img), &Homography::IDENTITY, Dof::SIMILARITY);
+        let (a, b) = (pyramid(big.clone()), pyramid(img));
+        let (ca, cb) = (contrasts(&a), contrasts(&b));
+        let fit = align(pyr(&a, &ca), pyr(&b, &cb), &Homography::IDENTITY, Dof::SIMILARITY);
         let err = (0..4)
             .map(|k| {
                 let (x, y) = (100.0 + 360.0 * (k % 2) as f64, 80.0 + 240.0 * (k / 2) as f64);
@@ -489,7 +527,9 @@ mod tests {
             *v = *v * 0.7 + 0.1;
         }
         let dof = Dof { shift: true, rotation: false, scale: false, affine: false };
-        let fit = align(&pyramid(t), &pyramid(img), &Homography::IDENTITY, dof);
+        let (a, b) = (pyramid(t), pyramid(img));
+        let (ca, cb) = (contrasts(&a), contrasts(&b));
+        let fit = align(pyr(&a, &ca), pyr(&b, &cb), &Homography::IDENTITY, dof);
         let m = fit.h.0;
         // image(x) = template(x + (2.4, −1.1)), so W(x) = x − (2.4, −1.1)
         assert!((m[2] + 2.4).abs() < 0.03 && (m[5] - 1.1).abs() < 0.03, "{m:?}");
@@ -500,7 +540,8 @@ mod tests {
     #[test]
     fn flat_images_keep_the_initial_warp() {
         let flat = Plane::filled(64, 48, 0.5);
-        let fit = align(std::slice::from_ref(&flat), std::slice::from_ref(&flat), &Homography::IDENTITY, Dof::SIMILARITY);
+        let (g, c) = (std::slice::from_ref(&flat), [contrast(&flat)]);
+        let fit = align(pyr(g, &c), pyr(g, &c), &Homography::IDENTITY, Dof::SIMILARITY);
         assert_eq!(fit.h, Homography::IDENTITY);
         assert_eq!(fit.ncc, 0.0);
     }

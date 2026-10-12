@@ -1,7 +1,8 @@
 //! The align pass: every frame registered to its neighbour in focus order, chained to a reference.
 //!
-//! - **Work images** (≤ `work_edge`, 2048 px by default): grey `(0.25R + 0.6G + 0.15B)^(1/2.2)`,
-//!   low-passed (σ = 1 px against noise and aliasing), in a pyramid down to 128–256 px. Only the previous frame's work image is kept, so memory doesn't grow with the
+//! - **Work images** (≤ `work_edge`, 2048 px by default): grey `√(0.25R + 0.6G + 0.15B)`,
+//!   low-passed (σ = 1 px against noise and aliasing), in a pyramid down to 128–256 px, with a
+//!   local-contrast map per level for the focus-change weights. Only the previous frame's work image is kept, so memory doesn't grow with the
 //!   number of frames.
 //! - **Pairs**: inverse-compositional Lucas–Kanade ([`super::lk`]) from the identity; the
 //!   sharper frame of the pair is the template. When the fit correlates poorly (NCC < 0.6),
@@ -45,6 +46,8 @@ pub const GRID: usize = 64;
 pub struct WorkFrame {
     /// Grey pyramid, level 0 = the work image.
     pub pyr: Vec<Plane>,
+    /// Local contrast per pyramid level ([`lk::contrast`]).
+    pub contrast: Vec<Plane>,
     /// A small blurred colour thumbnail (brightness gains).
     pub small: Rgb32f,
     pub clip: f32,
@@ -59,7 +62,11 @@ impl WorkFrame {
         self.pyr.first().map_or((0, 0), |p| (p.width, p.height))
     }
     pub fn bytes(&self) -> usize {
-        self.pyr.iter().map(|p| p.data.len() * 4).sum::<usize>() + self.small.data.len() * 12 + self.grid.len() * 4
+        self.pyr.iter().chain(&self.contrast).map(|p| p.data.len() * 4).sum::<usize>() + self.small.data.len() * 12 + self.grid.len() * 4
+    }
+
+    fn pyramid(&self) -> lk::Pyramid<'_> {
+        lk::Pyramid { grey: &self.pyr, contrast: &self.contrast }
     }
 }
 
@@ -107,10 +114,10 @@ pub fn sharpness_grid(p: &Plane) -> (f64, Vec<f32>) {
     (total, sum.iter().zip(&cnt).map(|(s, &c)| (s / c.max(1) as f64) as f32).collect())
 }
 
-/// Grey value for alignment.
+/// Grey value for alignment: √luminance (perceptually even enough, and cheap).
 #[inline]
 fn grey(c: [f32; 3]) -> f32 {
-    (0.25 * c[0] + 0.6 * c[1] + 0.15 * c[2]).clamp(0.0, 1.0).powf(1.0 / 2.2)
+    (0.25 * c[0] + 0.6 * c[1] + 0.15 * c[2]).clamp(0.0, 1.0).sqrt()
 }
 
 /// The work image of a frame (scaled to ≤ `work_edge`).
@@ -130,7 +137,8 @@ pub fn work_frame(img: &Rgb32f, clip: f32, work_edge: usize) -> WorkFrame {
     let lvl = pyr.iter().position(|p| p.width.max(p.height) <= 640).unwrap_or(pyr.len().saturating_sub(1));
     let (sharpness, grid) = pyr.get(lvl).map(sharpness_grid).unwrap_or_default();
     let small = gaussian(&fit(&img, 384, 384, Filter::Box), 1.0);
-    WorkFrame { pyr, small, clip, sharpness, grid }
+    let contrast = pyr.par_iter().map(lk::contrast).collect();
+    WorkFrame { pyr, contrast, small, clip, sharpness, grid }
 }
 
 /// The registration of one frame to the previous good frame of the sequence.
@@ -203,11 +211,11 @@ impl Aligner {
             let prev_is_template = prev.sharpness >= wf.sharpness;
             let (t, i) = if prev_is_template { (prev, &wf) } else { (&wf, prev) };
             let ident = lk::ncc(&t.pyr[0], &i.pyr[0], &Homography::IDENTITY);
-            let mut best = lk::align(&t.pyr, &i.pyr, &Homography::IDENTITY, self.dof);
+            let mut best = lk::align(t.pyramid(), i.pyramid(), &Homography::IDENTITY, self.dof);
             if (!best.ncc.is_finite() || best.ncc < SEED_NCC)
                 && let Some(seed) = feature_seed(t, i)
             {
-                let f = lk::align(&t.pyr, &i.pyr, &seed, self.dof);
+                let f = lk::align(t.pyramid(), i.pyramid(), &seed, self.dof);
                 if f.ncc > best.ncc || !best.ncc.is_finite() {
                     best = f;
                     pair.seeded = true;

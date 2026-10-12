@@ -183,7 +183,7 @@ fn read_matte(buffer: &CVPixelBuffer) -> Result<Matte, String> {
     for y in 0..h {
         let line = bytes.get(y * stride..y * stride + row).ok_or("Vision's mask is smaller than its rows")?;
         if size == 4 {
-            alpha.extend(line.chunks_exact(4).filter_map(|b| b.try_into().ok()).map(f32::from_ne_bytes));
+            alpha.extend(line.as_chunks::<4>().0.iter().map(|b| f32::from_ne_bytes(*b)));
         } else {
             alpha.extend(line.iter().map(|&b| f32::from(b) / 255.0));
         }

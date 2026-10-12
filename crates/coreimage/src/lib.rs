@@ -226,7 +226,7 @@ fn take_rgb(rgba: &[f32], gain: f32, out: &mut Vec<[f32; 3]>) {
         let v = v * gain;
         if v.is_finite() && v > 0.0 { v } else { 0.0 }
     };
-    out.extend(rgba.chunks_exact(4).map(|p| [clean(p[0]), clean(p[1]), clean(p[2])]));
+    out.extend(rgba.as_chunks::<4>().0.iter().map(|p| [clean(p[0]), clean(p[1]), clean(p[2])]));
 }
 
 /// Run `f`, turning a panic in it (an unexpected nil from Objective-C, say) into an error.
@@ -290,7 +290,7 @@ mod tests {
             // the 6 × 5 pixels from column 2, row 2 (counted from the top): Core Image's y from 1 (bottom) up to 6
             let (got_w, got_h, got) = macos::roundtrip(w, h, &src, (2.0, 1.0, 6.0, 5.0), 3 * 6 * 16).unwrap();
             assert_eq!((got_w, got_h, got.len()), (6, 5, 30));
-            for (j, row) in got.chunks_exact(6).enumerate() {
+            for (j, row) in got.as_chunks::<6>().0.iter().enumerate() {
                 for (i, p) in row.iter().enumerate() {
                     let s = src[(2 + j) * w + 2 + i];
                     for c in 0..3 {

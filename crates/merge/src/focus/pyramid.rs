@@ -275,7 +275,7 @@ impl Pyramid {
             u.data.par_iter_mut().zip(acc.data.par_iter()).for_each(|(a, b)| *a += b);
             std::mem::swap(&mut r, &mut u);
         }
-        let img = Rgb32f { width: self.w, height: self.h, data: r.data.chunks_exact(3).map(|c| [0, 1, 2].map(|j| c[j].max(0.0).powi(2))).collect() };
+        let img = Rgb32f { width: self.w, height: self.h, data: r.data.as_chunks::<3>().0.iter().map(|c| c.map(|v| v.max(0.0).powi(2))).collect() };
         let inv = 1.0 / last.max(1) as f32;
         let depth = Plane { width: self.w, height: self.h, data: self.winner.iter().map(|&k| k as f32 * inv).collect() };
         (img, depth)

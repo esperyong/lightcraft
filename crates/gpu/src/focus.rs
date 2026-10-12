@@ -83,9 +83,9 @@ fn pack(dst: wgpu::WriteOnly<'_, [u8]>, src: &[f32], scale: f32) {
     use rayon::prelude::*;
     let fill = |at: usize, mut part: wgpu::WriteOnly<'_, [u8]>| {
         let mut tmp = vec![0u8; part.len()];
-        for (j, o) in tmp.chunks_exact_mut(2).enumerate() {
+        for (j, o) in tmp.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let v = src.get(at / 2 + j).copied().unwrap_or(0.0);
-            o.copy_from_slice(&((v * scale).round().clamp(0.0, 65535.0) as u16).to_le_bytes());
+            *o = ((v * scale).round().clamp(0.0, 65535.0) as u16).to_le_bytes();
         }
         part.copy_from_slice(&tmp);
     };
@@ -296,7 +296,7 @@ impl FocusPass {
             let s = self.inner;
             let n = s.w * s.h;
             let f: Vec<f32> = read(s.gpu, &s.fs, 5 * n)?;
-            let sum = f.get(..3 * n).unwrap_or_default().chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+            let sum = f.get(..3 * n).unwrap_or_default().as_chunks::<3>().0.to_vec();
             Ok((sum, f.get(3 * n..4 * n).unwrap_or_default().to_vec(), f.get(4 * n..5 * n).unwrap_or_default().to_vec()))
         }
         #[cfg(target_arch = "wasm32")]
@@ -318,7 +318,9 @@ impl FocusPass {
             let colours = |k: usize| -> Vec<[u16; 3]> {
                 c.get(n + 2 * k * n..n + 2 * (k + 1) * n)
                     .unwrap_or_default()
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|q| [(q[0] & 0xffff) as u16, (q[0] >> 16) as u16, (q[1] & 0xffff) as u16])
                     .collect()
             };

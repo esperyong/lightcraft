@@ -43,6 +43,10 @@ Overrides (read once at launch):
 - else `WGPU_BACKEND` (wgpu's own variable, same names) — before #136 only the window honoured it,
   the compute device always used Vulkan + DX12 (+ Metal).
 - `LIGHTCRAFT_GPU=0`: GPU rendering off for the process (the window is unaffected).
+- `LIGHTCRAFT_GPU_SOFTWARE=1`: accept a software adapter (Mesa's lavapipe / llvmpipe), which is
+  skipped otherwise (slower than the CPU pipeline). For tests and kernel work on machines without a
+  GPU: `LIGHTCRAFT_GPU_SOFTWARE=1 cargo test -p lightcraft-gpu --test equivalence` runs the
+  equivalence tests on lavapipe.
 
 **DX12 shader compiler (issue #471).** Every instance (window and compute) compiles DX12 shaders with
 FXC (`d3dcompiler_47.dll`, part of Windows; `lightcraft_gpu::backend::backend_options`). wgpu's
@@ -102,6 +106,13 @@ walks the drive.
   [Limits, failures and the CPU fallback](#limits-failures-and-the-cpu-fallback)).
 - wasm32: the crate compiles to the CPU fallback (WebGPU needs asynchronous device creation and a
   device shared with the canvas — open item below).
+
+Focus stacking (`lightcraft_merge::focus`) runs the fuse pass of methods A and B on the render
+device too (`crates/gpu/src/focus.rs`, `wgsl/focus.wgsl`): each frame is uploaded, resampled,
+measured and folded into the method's state, which stays on the device until it is read back once;
+one frame is in flight at a time. The engine plugs it into the stacker
+(`lightcraft_engine::merge::GpuFocusKernels`); any device error makes the stacker repeat the pass on
+the CPU. `crates/engine/tests/focus_equivalence.rs` holds the two to < 0.5 LSB mean.
 
 ## Structure
 - Shared parameters, so the two implementations cannot drift apart: `pipeline::plan` (effective

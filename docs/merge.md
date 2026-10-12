@@ -88,7 +88,9 @@ frames (as memory allows) while the stacker works on the current ones.
    geometry and colour tags are the result's), brightness per channel likewise (median log ratio of
    mid-tones). The result is cropped to the area every frame covers.
 3. *Fuse* (full size): each frame resampled (Catmull–Rom) into the reference geometry, divided by its
-   gain, its focus measured, folded into the method's state.
+   gain, its focus measured, folded into the method's state. With a GPU, methods A and B do this on
+   the device (`crates/gpu/src/focus.rs`), their state staying there until the end of the pass; a
+   device error repeats the pass on the CPU. `info.device` says where it ran.
 4. *Gather* (method B, only when needed).
 
 **Output:** a 16-bit linear DNG `<first photo in focus order>-Focus.dng` with the reference frame's colour
@@ -118,7 +120,7 @@ scale in `BaselineExposure`; raw sources keep their DNG colour tags (camera RGB)
 ## Measured (synthetic tests, `cargo test -p lightcraft-merge`)
 
 - Focus stack speed on Helicon Focus's terms (100 frames of 5616 × 3744 in memory, MPixel/s):
-  `cargo run --release -p lightcraft-merge --example focus_bench` (or `cargo xtask bench --focus`,
+  `cargo run --release -p lightcraft-engine --example focus_bench` (or `cargo xtask bench --focus`,
   which records it in `target/bench/history.jsonl`; `SIZE=1920x1280 FRAMES=30` for a small machine).
   Every frame-sized buffer is reused from frame to frame (fresh ones cost more in page faults than
   the arithmetic). Numbers that count are from an Apple M5 (#18); Helicon's own table: M5 753 MPixel/s
@@ -146,5 +148,6 @@ scale in `BaselineExposure`; raw sources keep their DNG colour tags (camera RGB)
   caption also lists them.
 - Panorama output is limited to `maxMegapixels` (default 40) — blending memory is ~25 bytes/pixel.
 - The browser build has no file access for merges yet.
-- Focus stack: CPU only so far (GPU kernels to come); its speed against Helicon Focus has to be measured
-  on a Mac (`#18`). No retouching between methods/frames after the merge yet.
+- Focus stack: method C, the depth refinement and the gather pass run on the CPU; its speed against
+  Helicon Focus has to be measured on a Mac (`#18`). No retouching between methods/frames after the
+  merge yet.

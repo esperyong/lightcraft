@@ -29,6 +29,7 @@ use lightcraft_raster::Rgb32f;
 pub mod backend;
 #[cfg(not(target_arch = "wasm32"))]
 mod ctx;
+pub mod focus;
 #[cfg(all(feature = "denoise", not(target_arch = "wasm32")))]
 pub mod nn;
 #[cfg(not(target_arch = "wasm32"))]
@@ -50,7 +51,7 @@ static LAST_FALLBACK: Mutex<Option<String>> = Mutex::new(None);
 
 /// Stop using the GPU for the rest of the process (after a device error).
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-fn mark_broken(reason: &str) {
+pub(crate) fn mark_broken(reason: &str) {
     let mut r = BROKEN_REASON.lock().unwrap_or_else(|e| e.into_inner());
     if r.is_none() {
         *r = Some(reason.to_string());

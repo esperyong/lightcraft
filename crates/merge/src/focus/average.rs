@@ -40,6 +40,28 @@ impl Average {
         }
     }
 
+    /// The state as another device would hand it over (tests of the device plumbing).
+    pub fn into_state(self) -> super::kernels::KernelState {
+        super::kernels::KernelState::Average { sum: self.sum, wsum: self.wsum, dsum: self.dsum }
+    }
+
+    /// The state another device built ([`super::kernels::FocusKernels`]); `None` when a vector
+    /// doesn't have one value per pixel.
+    pub fn from_state(w: usize, h: usize, sigma: f32, sum: Vec<[f32; 3]>, wsum: Vec<f32>, dsum: Vec<f32>) -> Option<Average> {
+        let n = w * h;
+        (sum.len() == n && wsum.len() == n && dsum.len() == n).then(|| Average {
+            w,
+            h,
+            sum,
+            wsum,
+            dsum,
+            sigma,
+            wt: Plane::new(0, 0),
+            t1: Plane::new(0, 0),
+            t2: Plane::new(0, 0),
+        })
+    }
+
     pub fn bytes(&self) -> usize {
         self.sum.len() * 12 + self.wsum.len() * 4 + self.dsum.len() * 4 + (self.wt.data.len() + self.t1.data.len() + self.t2.data.len()) * 4
     }

@@ -30,9 +30,10 @@
 //! stackaroni) were read for ideas only, no GPL code was consulted.
 
 pub mod align;
-mod average;
+pub mod average;
 pub mod depth;
 pub mod filters;
+pub mod kernels;
 pub mod lk;
 pub mod measure;
 pub mod order;
@@ -294,6 +295,8 @@ pub struct FocusResult {
     pub crop: Rect,
     pub frame_size: (usize, usize),
     pub warnings: Vec<String>,
+    /// Where the fuse pass ran: "CPU", or the device's name (with why it fell back, if it did).
+    pub device: String,
     pub color: FrameColor,
     pub raw: bool,
     pub orientation: Orientation,
@@ -410,6 +413,19 @@ pub struct FocusStacker {
     /// Frame-sized buffers reused from frame to frame.
     frame_buf: measure::FrameBuf,
     measure_buf: measure::MeasureBuf,
+    /// Another device for the fuse pass, and its state in the current pass.
+    kernels: Option<Box<dyn kernels::FocusKernels>>,
+    device: Device,
+    device_note: String,
+}
+
+/// Where the current fuse pass runs.
+#[derive(Clone, Debug, PartialEq)]
+enum Device {
+    Cpu,
+    Kernels,
+    /// The device failed in this pass (it is repeated on the CPU).
+    Failed(String),
 }
 
 /// `seq` thinned to every n-th entry, keeping the first and the last.
@@ -467,7 +483,16 @@ impl FocusStacker {
             spans,
             frame_buf: measure::FrameBuf::default(),
             measure_buf: measure::MeasureBuf::default(),
+            kernels: None,
+            device: Device::Cpu,
+            device_note: "CPU".into(),
         })
+    }
+
+    /// Run the fuse pass of methods A and B on another device (a GPU). Method C, the depth
+    /// refinement and the gather pass stay on the CPU; a device that fails repeats the pass there.
+    pub fn set_kernels(&mut self, k: Box<dyn kernels::FocusKernels>) {
+        self.kernels = Some(k);
     }
 
     /// Bytes of image-sized state held now (alignment images, the method's per-pixel state, the
@@ -597,15 +622,35 @@ impl FocusStacker {
     fn fuse(&mut self, pos: usize, index: usize, img: &Rgb32f, frame: &Frame, clip: f32) -> Result<()> {
         let size = (img.width, img.height);
         if self.geometry.is_none() {
-            let g = self.geometry_for(size);
+            self.geometry = Some(self.geometry_for(size));
+        }
+        if self.fuser.is_none() && self.device == Device::Cpu {
+            let Some(g) = &self.geometry else { return Ok(()) };
             let (w, h) = (g.rect.w, g.rect.h);
             let s = self.opts.smoothing_px();
-            self.fuser = Some(match self.opts.method {
-                FocusMethod::Average => Fuser::Average(average::Average::new(w, h, 2.0 * s)),
-                FocusMethod::Depth => Fuser::Depth(depth::Depth::new(w, h)),
-                FocusMethod::Pyramid => Fuser::Pyramid(pyramid::Pyramid::new(w, h, self.opts.radius_px() as f32, s)),
-            });
-            self.geometry = Some(g);
+            let on_device = match (self.kernels.as_mut(), self.opts.method) {
+                (Some(k), FocusMethod::Average | FocusMethod::Depth) => match k.begin(w, h, self.opts.method, self.opts.radius_px(), 2.0 * s) {
+                    Ok(()) => {
+                        self.device_note = k.name();
+                        true
+                    }
+                    Err(e) => {
+                        self.device_note = format!("CPU ({}: {e})", k.name());
+                        self.kernels = None;
+                        false
+                    }
+                },
+                _ => false,
+            };
+            if on_device {
+                self.device = Device::Kernels;
+            } else {
+                self.fuser = Some(match self.opts.method {
+                    FocusMethod::Average => Fuser::Average(average::Average::new(w, h, 2.0 * s)),
+                    FocusMethod::Depth => Fuser::Depth(depth::Depth::new(w, h)),
+                    FocusMethod::Pyramid => Fuser::Pyramid(pyramid::Pyramid::new(w, h, self.opts.radius_px() as f32, s)),
+                });
+            }
         }
         let Some(g) = &self.geometry else { return Ok(()) };
         if g.size != size {
@@ -628,6 +673,17 @@ impl FocusStacker {
         }
         let h = g.p.get(pos).copied().unwrap_or(Homography::IDENTITY);
         let ig = g.inv_gain.get(pos).copied().unwrap_or([1.0; 3]);
+        match (&self.device, self.kernels.as_mut()) {
+            (Device::Kernels, Some(k)) => {
+                if let Err(e) = k.add(pos, img, &h, g.rect, ig, clip, self.opts.bicubic) {
+                    self.device = Device::Failed(format!("{}: {e}", k.name()));
+                }
+                return Ok(());
+            }
+            // the pass is repeated on the CPU
+            (Device::Failed(_), _) => return Ok(()),
+            _ => {}
+        }
         let warped = measure::warp(img, &h, g.rect, ig, clip, self.opts.bicubic, &mut self.frame_buf);
         let r = self.opts.radius_px();
         match self.fuser.as_mut() {
@@ -697,6 +753,38 @@ impl FocusStacker {
             }
             Pass::Fuse => {
                 let last = self.fuse_seq.len().saturating_sub(1);
+                // the state another device kept, or the pass again on the CPU when it failed
+                let device = std::mem::replace(&mut self.device, Device::Cpu);
+                let failed = match (device, self.kernels.as_mut()) {
+                    (Device::Kernels, Some(k)) => match k.finish(last + 1) {
+                        Ok(state) => {
+                            let Some(g) = &self.geometry else { return Err(MergeError::TooFew(0, 2)) };
+                            let (w, h) = (g.rect.w, g.rect.h);
+                            let fuser = match state {
+                                kernels::KernelState::Average { sum, wsum, dsum } => {
+                                    average::Average::from_state(w, h, 2.0 * self.opts.smoothing_px(), sum, wsum, dsum).map(Fuser::Average)
+                                }
+                                kernels::KernelState::Depth(s) => depth::Depth::from_state(w, h, s, last + 1).map(Fuser::Depth),
+                            };
+                            match fuser {
+                                Some(f) => {
+                                    self.fuser = Some(f);
+                                    None
+                                }
+                                None => Some(format!("{}: the state read back has the wrong size", k.name())),
+                            }
+                        }
+                        Err(e) => Some(format!("{}: {e}", k.name())),
+                    },
+                    (Device::Failed(why), _) => Some(why),
+                    _ => None,
+                };
+                if let Some(why) = failed {
+                    self.kernels = None;
+                    self.device_note = format!("CPU (after {why})");
+                    self.stage = Stage::Fuse;
+                    return Ok(());
+                }
                 check(progress, self.spans.fuse.1, "Building depth map")?;
                 match self.fuser.take() {
                     Some(Fuser::Average(av)) => {
@@ -782,6 +870,7 @@ impl FocusStacker {
             crop: geometry.rect,
             frame_size: geometry.size,
             warnings: self.warnings,
+            device: self.device_note,
             color: meta.color,
             raw: meta.raw,
             orientation: Orientation::Normal,
@@ -794,6 +883,93 @@ impl FocusStacker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in device running the CPU code behind [`kernels::FocusKernels`], optionally
+    /// failing at one frame.
+    struct Mock {
+        fail_at: Option<usize>,
+        avg: Option<average::Average>,
+        dep: Option<depth::Depth>,
+        radius: usize,
+        fb: measure::FrameBuf,
+        mb: measure::MeasureBuf,
+    }
+
+    impl kernels::FocusKernels for Mock {
+        fn name(&self) -> String {
+            "mock".into()
+        }
+        fn begin(&mut self, w: usize, h: usize, method: FocusMethod, radius: usize, sigma: f32) -> std::result::Result<(), String> {
+            self.radius = radius;
+            match method {
+                FocusMethod::Average => self.avg = Some(average::Average::new(w, h, sigma)),
+                FocusMethod::Depth => self.dep = Some(depth::Depth::new(w, h)),
+                FocusMethod::Pyramid => return Err("not here".into()),
+            }
+            Ok(())
+        }
+        fn add(
+            &mut self,
+            pos: usize,
+            src: &Rgb32f,
+            h: &Homography,
+            out: Rect,
+            g: [f32; 3],
+            clip: f32,
+            bicubic: bool,
+        ) -> std::result::Result<(), String> {
+            if self.fail_at == Some(pos) {
+                return Err("device lost".into());
+            }
+            let w = measure::warp(src, h, out, g, clip, bicubic, &mut self.fb);
+            let fm = measure::focus_measure(&w, self.radius, &mut self.mb);
+            if let Some(a) = self.avg.as_mut() {
+                a.add(pos, &w, fm);
+            }
+            if let Some(d) = self.dep.as_mut() {
+                d.add(pos, &w, fm, measure::noise_floor(fm));
+            }
+            Ok(())
+        }
+        fn finish(&mut self, _frames: usize) -> std::result::Result<kernels::KernelState, String> {
+            match (self.avg.take(), self.dep.take()) {
+                (Some(a), _) => Ok(a.into_state()),
+                (_, Some(d)) => Ok(kernels::KernelState::Depth(d.into_state())),
+                _ => Err("nothing".into()),
+            }
+        }
+    }
+
+    #[test]
+    fn another_device_gives_the_cpu_result_and_a_failing_one_falls_back() {
+        let b = crate::synth::focus_bracket(160, 110, &crate::synth::FocusSynth { n: 5, ..Default::default() }).unwrap();
+        let frames: Vec<Frame> = b.frames.iter().map(|f| Frame::from_linear_rec2020(f.clone(), None)).collect();
+        for method in [FocusMethod::Average, FocusMethod::Depth] {
+            let opts = FocusOptions { method, ..Default::default() };
+            let cpu = stack_focus(&frames, &opts, &crate::no_progress).unwrap();
+            assert_eq!(cpu.device, "CPU");
+            for fail_at in [None, Some(2)] {
+                let mut st = FocusStacker::new(frames.len(), opts.clone()).unwrap();
+                st.set_kernels(Box::new(Mock { fail_at, avg: None, dep: None, radius: 0, fb: Default::default(), mb: Default::default() }));
+                let mut fuse_passes = 0;
+                while let Some(req) = st.next_pass().unwrap() {
+                    fuse_passes += usize::from(req.pass == Pass::Fuse);
+                    for &i in &req.frames {
+                        st.push(i, &frames[i], &crate::no_progress).unwrap();
+                    }
+                    st.end_pass(&crate::no_progress).unwrap();
+                }
+                let r = st.finish(&crate::no_progress).unwrap();
+                assert_eq!(r.image.data, cpu.image.data, "{method:?} {fail_at:?}");
+                assert_eq!(fuse_passes, if fail_at.is_some() { 2 } else { 1 });
+                if fail_at.is_some() {
+                    assert!(r.device.starts_with("CPU (after mock: device lost"), "{}", r.device);
+                } else {
+                    assert_eq!(r.device, "mock");
+                }
+            }
+        }
+    }
 
     #[test]
     fn thinning_keeps_both_ends() {

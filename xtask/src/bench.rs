@@ -1,7 +1,7 @@
 //! `cargo xtask bench [FILE] [--strict] [--threshold PCT]`: run the end-to-end render benchmark, record
 //! the results in `target/bench/history.jsonl` (one JSON object per run, with git revision and load
 //! average) and compare with the previous run of the same benchmark. `--focus` runs the focus-stacking
-//! benchmark instead (`crates/merge/examples/focus_bench.rs`, Helicon Focus's terms; its `FRAMES`,
+//! benchmark instead (`crates/engine/examples/focus_bench.rs`, Helicon Focus's terms; its `FRAMES`,
 //! `SIZE`, `METHODS` environment variables pass through).
 //!
 //! Comparisons use **process CPU time**, which reflects the work done even on a busy shared machine;
@@ -81,8 +81,8 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     });
     let mut cmd = crate::cargo();
     if focus {
-        cmd.args(["run", "--release", "-q", "-p", "lightcraft-merge", "--example", "focus_bench"]);
-        eprintln!("$ cargo run --release -p lightcraft-merge --example focus_bench");
+        cmd.args(["run", "--release", "-q", "-p", "lightcraft-engine", "--example", "focus_bench"]);
+        eprintln!("$ cargo run --release -p lightcraft-engine --example focus_bench");
     } else {
         cmd.args(["run", "--release", "-q", "-p", "lightcraft-engine", "--example", "render_bench", "--"]);
         if let Some(f) = &file {

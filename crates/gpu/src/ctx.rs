@@ -61,6 +61,11 @@ const MODULES: &[Module] = &[
         entries: &["shape", "combine", "finalize"],
     },
     Module {
+        src: include_str!("wgsl/focus.wgsl"),
+        bindings: &[("src", false, "f32"), ("a", true, "f32"), ("b", true, "f32"), ("flags", true, "u32"), ("fs", true, "f32"), ("cs", true, "u32")],
+        entries: &["fwarp", "fgrey", "fml", "fsub", "favg_w", "favg_init", "favg_add", "fdep_init", "fdep_add"],
+    },
+    Module {
         src: include_str!("wgsl/geom.wgsl"),
         bindings: &[("src", false, "f32"), ("dst", true, "f32"), ("coverage", false, "u32")],
         entries: &["orient", "sample_affine", "sample_warp"],
@@ -290,7 +295,9 @@ impl Gpu {
         )
         .map_err(|e| format!("no GPU adapter among {backends:?} ({e})"))?;
         let info = adapter.get_info();
-        if info.device_type == wgpu::DeviceType::Cpu {
+        // a software adapter (Mesa's lavapipe, llvmpipe) is slower than the CPU pipeline; tests and
+        // kernel development can still ask for one (`LIGHTCRAFT_GPU_SOFTWARE=1`)
+        if info.device_type == wgpu::DeviceType::Cpu && std::env::var_os("LIGHTCRAFT_GPU_SOFTWARE").is_none_or(|v| v != "1") {
             log::info!("gpu: only a software adapter ({}), using the CPU pipeline", info.name);
             return Err(format!("software adapter ({}) skipped: the CPU pipeline is faster", info.name));
         }
@@ -518,6 +525,23 @@ impl Gpu {
         pass.set_pipeline(&k.pipeline);
         pass.set_bind_group(0, &bg, &[]);
         pass.dispatch_workgroups(groups[0], groups[1], groups[2]);
+    }
+
+    /// Read back `len` 32-bit values of `src` from value `offset` on (submitting what this thread
+    /// recorded first is the caller's business: this records and submits a copy of its own).
+    pub fn read_range<T: bytemuck::Pod>(&self, src: &Buf, offset: usize, len: usize) -> Vec<T> {
+        let zeros = || vec![<T as bytemuck::Zeroable>::zeroed(); len];
+        if offset + len > src.len {
+            fail(FailKind::Fatal, format!("readback of {len} values at {offset} from a buffer of {}", src.len));
+            return zeros();
+        }
+        if len == 0 {
+            return Vec::new();
+        }
+        let tmp = self.buffer(len);
+        let mut enc = self.encoder();
+        enc.copy_buffer_to_buffer(src.raw(), (offset * 4) as u64, tmp.raw(), 0, (len * 4) as u64);
+        self.finish_and_read(enc, &tmp, len)
     }
 
     /// Submit `enc`, then read back the first `len` 32-bit values of `src`.

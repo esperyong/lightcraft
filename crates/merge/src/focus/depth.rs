@@ -98,6 +98,49 @@ impl Depth {
         self.best.len() * (2 + 4 * 6 + 6 * 4)
     }
 
+    /// The state as another device would hand it over (tests of the device plumbing).
+    pub fn into_state(self) -> super::kernels::DepthState {
+        super::kernels::DepthState {
+            best: self.best,
+            fm_best: self.fm_best,
+            fm_left: self.fm_left,
+            fm_right: self.fm_right,
+            fm_sum: self.fm_sum,
+            prev_fm: self.prev_fm,
+            col_best: self.col_best,
+            col_left: self.col_left,
+            col_right: self.col_right,
+            prev_col: self.prev_col,
+            noise: self.noise,
+        }
+    }
+
+    /// The state another device built ([`super::kernels::FocusKernels`]) after `count` frames;
+    /// `None` when a vector doesn't have one value per pixel.
+    pub fn from_state(w: usize, h: usize, s: super::kernels::DepthState, count: usize) -> Option<Depth> {
+        let n = w * h;
+        let ok = [s.best.len(), s.fm_best.len(), s.fm_left.len(), s.fm_right.len(), s.fm_sum.len(), s.prev_fm.len()]
+            .iter()
+            .chain(&[s.col_best.len(), s.col_left.len(), s.col_right.len(), s.prev_col.len()])
+            .all(|&l| l == n);
+        ok.then(|| Depth {
+            w,
+            h,
+            best: s.best,
+            fm_best: s.fm_best,
+            fm_left: s.fm_left,
+            fm_right: s.fm_right,
+            fm_sum: s.fm_sum,
+            col_best: s.col_best,
+            col_left: s.col_left,
+            col_right: s.col_right,
+            prev_col: s.prev_col,
+            prev_fm: s.prev_fm,
+            count,
+            noise: if s.noise.is_finite() && s.noise > 0.0 { s.noise } else { f32::INFINITY },
+        })
+    }
+
     /// Add the frame at position `pos` (0, 1, 2… in order) with its focus measure and noise floor.
     pub fn add(&mut self, pos: usize, frame: &Warped, fm: &Plane, noise: f32) {
         self.count = self.count.max(pos + 1);

@@ -306,6 +306,9 @@ impl MergeJob {
     /// Stream the sources through a focus stacker. Returns the result and seconds per pass.
     fn run_focus(&self, opts: &FocusOptions, progress: &ProgressFn) -> std::result::Result<(FocusResult, Value), String> {
         let mut st = FocusStacker::new(self.sources.len(), opts.clone()).map_err(err)?;
+        if let Some(k) = GpuFocusKernels::available() {
+            st.set_kernels(Box::new(k));
+        }
         let profile = lightcraft_pipeline::profiling();
         let mut seconds = serde_json::Map::new();
         while let Some(req) = st.next_pass().map_err(err)? {
@@ -344,6 +347,78 @@ impl MergeJob {
         }
         let r = st.finish(progress).map_err(err)?;
         Ok((r, Value::Object(seconds)))
+    }
+}
+
+/// The focus stacker's fuse pass on the GPU (`lightcraft_gpu::focus`), plugged in behind
+/// [`lightcraft_merge::focus::kernels::FocusKernels`]. Methods A and B; the stacker repeats the
+/// pass on the CPU when the device fails.
+#[derive(Default)]
+pub struct GpuFocusKernels {
+    pass: Option<lightcraft_gpu::focus::FocusPass>,
+    depth: bool,
+    name: String,
+}
+
+impl GpuFocusKernels {
+    /// Kernels on the GPU, when GPU rendering is on and a device exists.
+    pub fn available() -> Option<GpuFocusKernels> {
+        lightcraft_gpu::focus::FocusPass::device_name().map(|name| GpuFocusKernels { pass: None, depth: false, name })
+    }
+}
+
+impl lightcraft_merge::focus::kernels::FocusKernels for GpuFocusKernels {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn begin(&mut self, w: usize, h: usize, method: lightcraft_merge::FocusMethod, radius: usize, sigma: f32) -> std::result::Result<(), String> {
+        self.depth = match method {
+            lightcraft_merge::FocusMethod::Depth => true,
+            lightcraft_merge::FocusMethod::Average => false,
+            lightcraft_merge::FocusMethod::Pyramid => return Err("method C runs on the CPU".into()),
+        };
+        self.pass = Some(lightcraft_gpu::focus::FocusPass::begin(w, h, self.depth, radius, sigma)?);
+        Ok(())
+    }
+
+    fn add(
+        &mut self,
+        pos: usize,
+        src: &Rgb32f,
+        h: &lightcraft_geom::Homography,
+        out: lightcraft_merge::focus::Rect,
+        inv_gain: [f32; 3],
+        clip: f32,
+        bicubic: bool,
+    ) -> std::result::Result<(), String> {
+        let pass = self.pass.as_mut().ok_or("the pass hasn't started")?;
+        pass.add(pos, src, &h.0, [out.x, out.y, out.w, out.h], inv_gain, clip * 0.98, bicubic)
+    }
+
+    fn finish(&mut self, _frames: usize) -> std::result::Result<lightcraft_merge::focus::kernels::KernelState, String> {
+        use lightcraft_merge::focus::kernels::{DepthState, KernelState};
+        let pass = self.pass.take().ok_or("the pass hasn't started")?;
+        if !self.depth {
+            let (sum, wsum, dsum) = pass.finish_average()?;
+            return Ok(KernelState::Average { sum, wsum, dsum });
+        }
+        let d = pass.finish_depth()?;
+        let [fm_best, fm_left, fm_right, fm_sum, prev_fm] = d.measures;
+        let [col_best, col_left, col_right, prev_col] = d.colours;
+        Ok(KernelState::Depth(DepthState {
+            best: d.best,
+            fm_best,
+            fm_left,
+            fm_right,
+            fm_sum,
+            prev_fm,
+            col_best,
+            col_left,
+            col_right,
+            prev_col,
+            noise: d.noise,
+        }))
     }
 }
 
@@ -388,6 +463,7 @@ fn focus_info(r: &FocusResult, sources: &[(PhotoId, String)], opts: &FocusOption
             "seeded": r.alignments.iter().filter(|a| a.seeded).count(),
         },
         "warnings": r.warnings,
+        "device": r.device,
     })
 }
 

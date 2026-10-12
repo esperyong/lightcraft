@@ -3223,7 +3223,6 @@ dependencies = [
 name = "lightcraft-merge"
 version = "0.5.0"
 dependencies = [
- "libc",
  "lightcraft-codecs",
  "lightcraft-color",
  "lightcraft-geom",

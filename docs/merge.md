@@ -54,9 +54,13 @@ follow what photographers know from Helicon Focus:
 - **B — depth map** (`depth.rs`, the default): each pixel from the frame where it is sharpest. A
   parabola through the log focus measures of the winner and its neighbours gives a sub-frame depth;
   a confidence (contrast above noise, how peaked the focus profile is, and a halo term — weaker than
-  half the strongest focus within 4 × Radius) decides which depths are trusted; the rest are filled
-  from around (push–pull), and the depth map is smoothed by a confidence-weighted guided filter with
-  the winners' grey image as guide (radius 2 × Smoothing). Colours blend the two frames nearest the
+  half the strongest focus within 4 × Radius) decides which depths are trusted. Weakly trusted
+  depths give way to a depth spread from the trusted ones along the picture and stopped by its edges
+  (a normalised convolution with the domain transform, on a quarter-size grid, upsampled
+  edge-aware): a smooth subject — a plastic face, a petal — measures little more than noise, so its
+  per-pixel winners are random frames; it takes the depth of its own details and outline instead,
+  not an average of random frames or of what lies behind it. Then the depth map is smoothed by a
+  confidence-weighted guided filter with the winners' grey image as guide (radius 2 × Smoothing). Colours blend the two frames nearest the
   depth; when smoothing moves a pixel's depth beyond the frames the stacker kept for it, a second
   *gather* pass fetches those colours. Crisp detail and texture.
 - **C — pyramid** (`pyramid.rs`): Laplacian pyramids of √RGB, each band taken from the frame with the
@@ -152,6 +156,9 @@ of their RGB space.
   0.1 frames where confident; alignment ≤ 0.21 px with 0.4 %/frame breathing, 1.5 px drift, 0.15°
   rotation; C's brightness within 1.3 %; the halo around the depth step within 1.5 × that of an oracle
   taking each pixel from the frame focused at its true depth.
+- Focus stack, a smooth, faintly grainy face in focus in the first of 20 frames, a textured background
+  behind it: B puts the face at 0.03 frames (it was 4.4, 85 % of it more than 1.5 frames off, with
+  worm-like seams), its error 1.06 × that of the sharp frame (was 2.7 ×).
 
 - HDR, 3 brackets ±2 EV with 14-bit noise and handheld shifts: alignment error < 0.3 px, exposure
   error < 0.02 EV, radiance median log error < 0.03 (noise-limited, bias < 0.01), recovered

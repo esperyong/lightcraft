@@ -5,7 +5,8 @@ use lightcraft_geom::Homography;
 use lightcraft_merge::focus::{AlignOptions, FocusMethod, FocusOptions, FocusOrder, FocusResult, FocusStacker, Pass, stack_focus};
 use lightcraft_merge::synth::{FocusBracket, FocusSynth, focus_bracket};
 use lightcraft_merge::{Frame, FrameSource, MergeError, no_progress};
-use lightcraft_raster::Rgb32f;
+use lightcraft_raster::blur::gaussian;
+use lightcraft_raster::{Plane, Rgb32f};
 
 const W: usize = 640;
 const H: usize = 420;
@@ -293,6 +294,122 @@ fn flat_areas_do_not_amplify_noise() {
         eprintln!("{m:?}: noise {s:.5} vs one frame {one:.5}");
         assert!(s <= one * 1.15, "{m:?}: {s} vs {one}");
     }
+}
+
+/// 0..1 from a hash of `k` (splitmix64).
+fn unit(k: u64) -> f32 {
+    let mut z = k.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// Value noise with `cell`-pixel cells, 0..1.
+fn value_noise(x: usize, y: usize, cell: f32, seed: u64) -> f32 {
+    let (gx, gy) = (x as f32 / cell, y as f32 / cell);
+    let (x0, y0) = (gx.floor() as u64, gy.floor() as u64);
+    let (tx, ty) = (gx.fract(), gy.fract());
+    let g = |a: u64, b: u64| unit(seed ^ (a << 20) ^ (b << 42));
+    let top = g(x0, y0) * (1.0 - tx) + g(x0 + 1, y0) * tx;
+    let bot = g(x0, y0 + 1) * (1.0 - tx) + g(x0 + 1, y0 + 1) * tx;
+    top * (1.0 - ty) + bot * ty
+}
+
+/// A bracket of `n` frames of a smooth, faintly grainy "face" (two eyes, a mouth) in focus in the
+/// first frame, in front of a textured background focused from frame 6 to the last; no motion.
+/// Returns the frames, the sharp scene and the face's inner area.
+fn smooth_face(n: usize) -> (Vec<Rgb32f>, Rgb32f, Plane) {
+    let last = (n - 1) as f32;
+    let (cx, cy, rx, ry) = (0.5 * W as f32, 0.5 * H as f32, 0.3 * W as f32, 0.4 * H as f32);
+    let rho = |x: usize, y: usize| (((x as f32 + 0.5 - cx) / rx).powi(2) + ((y as f32 + 0.5 - cy) / ry).powi(2)).sqrt();
+    let disc = |x: usize, y: usize, px: f32, py: f32, r: f32| {
+        (r + 0.5 - ((x as f32 + 0.5 - px).powi(2) + (y as f32 + 0.5 - py).powi(2)).sqrt()).clamp(0.0, 1.0)
+    };
+    let alpha = Plane::from_fn(W, H, |x, y| ((1.0 - rho(x, y)) * rx + 0.5).clamp(0.0, 1.0));
+    let face = Rgb32f::from_fn(W, H, |x, y| {
+        let r = rho(x, y).min(1.0);
+        let mut v = (0.42 + 0.18 * (1.0 - r * r)) * (1.0 + 0.06 * (value_noise(x, y, 2.5, 7) - 0.5));
+        for ex in [-0.33, 0.33] {
+            let (px, py) = (cx + ex * rx, cy - 0.15 * ry);
+            let (e, hl) = (disc(x, y, px, py, 14.0), disc(x, y, px + 4.0, py - 4.0, 3.0));
+            v = (v * (1.0 - e) + 0.04 * e) * (1.0 - hl) + 0.8 * hl;
+        }
+        let (mx, my) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy - 0.1 * ry);
+        if my > 0.0 && ((mx * mx + my * my).sqrt() - 0.18 * rx).abs() < 1.5 {
+            v = 0.1;
+        }
+        [v * 1.05, v, v * 0.9]
+    });
+    let back = Rgb32f::from_fn(W, H, |x, y| {
+        let t =
+            0.5 * value_noise(x, y, 3.0, 11) + 0.3 * value_noise(x, y, 11.0, 13) + 0.1 * ((x as f32 * 0.21).sin() * (y as f32 * 0.17).cos() + 1.0);
+        let v = 0.08 + 0.3 * t;
+        [v * 0.8, v, v * 1.2]
+    });
+    let truth = Rgb32f::from_fn(W, H, |x, y| {
+        let (f, b, a) = (face.get(x, y), back.get(x, y), alpha.get(x, y));
+        [0, 1, 2].map(|c| f[c] * a + b[c] * (1.0 - a))
+    });
+    // defocus 1 px (σ) per frame up to 9 px; the background from pre-blurred levels
+    let levels: Vec<Rgb32f> = (0..10).map(|j| gaussian(&back, j as f32)).collect();
+    let face_pm = Rgb32f::from_fn(W, H, |x, y| face.get(x, y).map(|v| v * alpha.get(x, y)));
+    let frames = (0..n)
+        .map(|i| {
+            let blur = |z: f32| (z - i as f32).abs().min(9.0);
+            let (fp, fa) = (gaussian(&face_pm, blur(0.0)), gaussian(&alpha, blur(0.0)));
+            Rgb32f::from_fn(W, H, |x, y| {
+                let s = blur(6.0 + (last - 6.0) * x as f32 / W as f32);
+                let j = (s.floor() as usize).min(8);
+                let (p, q, t) = (levels[j].get(x, y), levels[j + 1].get(x, y), s - j as f32);
+                let (f, a) = (fp.get(x, y), fa.get(x, y));
+                std::array::from_fn(|c| {
+                    let k = ((i as u64) << 40) ^ (((y * W + x) as u64) << 2 | c as u64);
+                    let nz: f32 = (0..4u64).map(|j| unit(k.wrapping_add(j.wrapping_mul(0x632b_e59b_d9b4_e019)))).sum::<f32>() - 2.0;
+                    let v = f[c] + (1.0 - a) * (p[c] * (1.0 - t) + q[c] * t) + 0.002 * nz * 1.732;
+                    (v.clamp(0.0, 1.0) * 16383.0).round() / 16383.0
+                })
+            })
+        })
+        .collect();
+    (frames, truth, Plane::from_fn(W, H, |x, y| if rho(x, y) < 0.85 { 1.0 } else { 0.0 }))
+}
+
+#[test]
+fn a_smooth_subject_takes_the_depth_of_its_own_details() {
+    // A smooth face measures little more than noise, so its per-pixel winners are mostly random
+    // frames: it must take the depth of its eyes, mouth and outline, not an average of random
+    // frames or of the background around it (which left the face of a real figure soft, with
+    // worm-like seams).
+    let n = 20;
+    let (frames, truth, inner) = smooth_face(n);
+    let fr: Vec<Frame> = frames.iter().map(|f| Frame::from_linear_rec2020(f.clone(), None)).collect();
+    let o = FocusOptions { align: AlignOptions { enabled: false, ..Default::default() }, ..Default::default() };
+    let r = stack_focus(&fr, &o, &no_progress).unwrap();
+    assert_eq!((r.image.width, r.image.height), (W, H));
+    let err = |img: &Rgb32f| {
+        let (mut e, mut k) = (0.0f64, 0usize);
+        for (i, p) in img.data.iter().enumerate() {
+            if inner.data[i] > 0.5 {
+                e += (0..3).map(|c| ((p[c] - truth.data[i][c]) as f64).abs()).sum::<f64>() / 3.0;
+                k += 1;
+            }
+        }
+        e / k as f64
+    };
+    let (mut depth, mut off, mut k) = (0.0f64, 0usize, 0usize);
+    for (i, &d) in r.depth.data.iter().enumerate() {
+        if inner.data[i] > 0.5 {
+            let d = d as f64 * (n - 1) as f64;
+            depth += d;
+            off += usize::from(d > 1.5);
+            k += 1;
+        }
+    }
+    let (depth, off) = (depth / k as f64, off as f64 / k as f64);
+    let (ours, sharp) = (err(&r.image), err(&frames[0]));
+    eprintln!("face: mean depth {depth:.2} frames, {:.1} % more than 1.5 off; error {ours:.5} vs the sharp frame's {sharp:.5}", 100.0 * off);
+    assert!(depth < 0.75 && off < 0.02, "depth {depth}, {off}");
+    assert!(ours < 1.25 * sharp, "{ours} vs {sharp}");
 }
 
 #[test]

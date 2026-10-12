@@ -16,7 +16,11 @@
 //!   edge nearby are dominated by that edge's blur), after focus-stack's halo mask
 //!   (P. Aimonen, MIT, docs/Algorithms.md; idea only).
 //!
-//! Low-confidence pixels are filled from their surroundings (push–pull), then the depth map is
+//! Weakly confident pixels give way to the confident ones around them: their depth is blended
+//! (by confidence) with one spread from the confident pixels along the image, stopping at its
+//! edges ([`spread_along_edges`]). In a smooth area — a plastic face, a petal — the per-pixel
+//! winners are mostly noise; this way the area takes the depth of its own details and outline
+//! rather than an average of random frames or of whatever lies behind it. The depth map is then
 //! smoothed by a confidence-weighted guided filter with the winners' grey image as the guide
 //! (radius 2 × Smoothing), which keeps depth edges on image edges. Smoothing 0 keeps the raw
 //! per-pixel winners.
@@ -28,9 +32,8 @@
 use lightcraft_raster::{Plane, Rgb32f};
 use rayon::prelude::*;
 
-use super::filters::{max_filter, smoothstep, weighted_guided};
+use super::filters::{max_filter, smoothstep, spread_along_edges, weighted_guided};
 use super::measure::{Warped, grey};
-use crate::pano::blend::{Buf, push_pull};
 
 /// Colour encoding of the stored candidates: linear 0..2 in 16 bits.
 const CSCALE: f32 = 32768.0;
@@ -240,11 +243,12 @@ impl Depth {
         drop(fmb);
         // fill and smooth
         if p.smoothing > 0.0 && m > 1 {
-            let wgt: Vec<f32> = conf.data.iter().map(|&c| if c >= 0.05 { c } else { 0.0 }).collect();
-            let mut buf = Buf { w, h, c: 1, data: std::mem::take(&mut d.data) };
-            push_pull(&mut buf, &wgt);
-            d.data = buf.data;
             let guide = Plane { width: w, height: h, data: self.col_best.par_iter().map(|c| grey(dec(*c))).collect() };
+            let wgt: Vec<f32> = conf.data.par_iter().map(|&c| smoothstep(0.1, 0.5, c)).collect();
+            if wgt.iter().any(|&v| v > 0.0) {
+                let fill = spread_along_edges(&d, &wgt, &guide);
+                d.data.par_iter_mut().zip(fill.data.par_iter().zip(wgt.par_iter())).for_each(|(v, (f, w))| *v = w * *v + (1.0 - w) * f);
+            }
             let cw = conf.map(|c| c + 0.02);
             let r = (2.0 * p.smoothing).round().max(1.0) as usize;
             d = weighted_guided(&guide, &d, &cw, r, 1e-3);
@@ -432,7 +436,10 @@ mod tests {
         let (w, h, n) = (32, 4, 9);
         let mut d = Depth::new(w, h);
         // left part sharp in frame 0, right part in frame 8; between them no texture at all, so the
-        // depth there is filled in from both sides, far from the (arbitrary) winner, frame 0
+        // depth there is spread from the part it belongs to — the right one, whose colour it has —
+        // far from the (arbitrary) winner, frame 0. Green tells the frames apart in the middle.
+        let colour = |k: usize, x: usize| if (12..20).contains(&x) { [0.8, 0.8 + 0.01 * k as f32, 0.8] } else { [k as f32 * 0.1; 3] };
+        let frame = |k: usize| (Rgb32f::from_fn(w, h, |x, _| colour(k, x)), vec![VALID; w * h]);
         for k in 0..n {
             let fm = Plane::from_fn(w, h, |x, _| {
                 if (12..20).contains(&x) {
@@ -443,23 +450,24 @@ mod tests {
                     0.1
                 }
             });
-            d.add(k, &warped(&frame(w, h, [k as f32 * 0.1; 3])), &fm, 0.05);
+            d.add(k, &warped(&frame(k)), &fm, 0.05);
         }
         let mut r = d.finish(DepthParams { radius: 1, smoothing: 2.0, interpolate: false });
         let needed = r.needed();
-        assert!(!needed.is_empty());
+        assert!(needed.contains(&(n - 1)), "{needed:?}");
         for k in needed {
-            r.add(k, &warped(&frame(w, h, [k as f32 * 0.1; 3])));
+            r.add(k, &warped(&frame(k)));
         }
         let (img, depth, _) = r.done();
         // every pixel's colour is the colour of the frame its depth names
         for x in 0..w {
-            let k = (depth.get(x, 2) * (n - 1) as f32).round();
-            assert!((img.get(x, 2)[0] - k * 0.1).abs() < 1e-4, "x {x}: {:?} vs frame {k}", img.get(x, 2));
+            let k = (depth.get(x, 2) * (n - 1) as f32).round() as usize;
+            assert!((img.get(x, 2)[1] - colour(k, x)[1]).abs() < 1e-4, "x {x}: {:?} vs frame {k}", img.get(x, 2));
         }
         assert!(img.get(2, 2)[0].abs() < 1e-4);
         assert!((img.get(30, 2)[0] - 0.8).abs() < 1e-4);
         let mid = depth.get(16, 2) * 8.0;
-        assert!(mid > 1.0 && mid < 7.0, "{mid}");
+        assert!(mid > 7.5, "{mid}");
+        assert!((img.get(16, 2)[1] - 0.88).abs() < 1e-4, "{:?}", img.get(16, 2));
     }
 }

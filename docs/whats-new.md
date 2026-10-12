@@ -11,6 +11,9 @@
   is a linear DNG (`-Focus.dng`) you edit like any raw. Also `merge.focusStack` and `lightcraft-cli merge focus`.
 - The depth map travels in the DNG: Masking ▸ Depth selects a near-to-far range of a focus-stacked photo.
 - Photo Merge ▸ Focus Stack Each Bracket finds the focus brackets in a shoot and stacks them one after the other.
+- Photo Merge ▸ Retouch Focus Stack… paints over a stack with pixels from one of its photos or from another method,
+  to mend a halo or a lost bristle; the strokes stay editable.
+- With a GPU, methods A and B stack on it.
 
 ### Apple's raw decoder on the Mac
 - On macOS 12+, raws LightCraft can't decode yet (compressed Olympus ORF, Nikon High Efficiency NEF…) develop with

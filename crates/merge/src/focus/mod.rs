@@ -304,6 +304,21 @@ pub struct FocusResult {
     pub baseline_exposure: f64,
 }
 
+/// A stack's geometry fixed in advance — re-stacking a saved focus project: no ordering or
+/// alignment pass, the inputs stacked in the given order through these maps.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FixedGeometry {
+    /// The full-size frame the maps and the crop are in.
+    pub frame_size: (usize, usize),
+    /// Per input: reference → frame pixels at `frame_size`.
+    pub maps: Vec<Homography>,
+    /// Per input: brightness relative to the reference (the frame is divided by it).
+    pub gains: Vec<[f32; 3]>,
+    pub crop: Rect,
+    /// The reference input.
+    pub reference: usize,
+}
+
 /// Frames on demand (decoded files, test images…).
 pub trait FrameSource: Sync {
     fn len(&self) -> usize;
@@ -415,6 +430,7 @@ pub struct FocusStacker {
     measure_buf: measure::MeasureBuf,
     /// Another device for the fuse pass, and its state in the current pass.
     kernels: Option<Box<dyn kernels::FocusKernels>>,
+    fixed: Option<FixedGeometry>,
     device: Device,
     device_note: String,
 }
@@ -484,9 +500,28 @@ impl FocusStacker {
             frame_buf: measure::FrameBuf::default(),
             measure_buf: measure::MeasureBuf::default(),
             kernels: None,
+            fixed: None,
             device: Device::Cpu,
             device_note: "CPU".into(),
         })
+    }
+
+    /// A stacker for `fixed.maps.len()` inputs with the geometry decided before (a saved focus
+    /// project): one fuse pass (plus gather), inputs in the given order, frames at any size
+    /// (the maps and the crop scale with them).
+    pub fn with_geometry(opts: FocusOptions, fixed: FixedGeometry) -> Result<FocusStacker> {
+        let n = fixed.maps.len();
+        if fixed.gains.len() != n || fixed.reference >= n {
+            return Err(MergeError::Mismatch("focus stack: the saved geometry doesn't match its inputs".into()));
+        }
+        let opts = FocusOptions { order: FocusOrder::Selection, every: 1, ..opts };
+        let mut st = FocusStacker::new(n, FocusOptions { align: AlignOptions { enabled: false, brightness: false, ..opts.align.clone() }, ..opts })?;
+        st.seq = (0..n).collect();
+        st.fuse_seq = (0..n).collect();
+        st.stage = Stage::Fuse;
+        st.spans = Spans { order: (0.0, 0.0), align: (0.0, 0.0), fuse: (0.0, 0.9), gather: (0.9, 0.97) };
+        st.fixed = Some(fixed);
+        Ok(st)
     }
 
     /// Run the fuse pass of methods A and B on another device (a GPU). Method C, the depth
@@ -586,6 +621,26 @@ impl FocusStacker {
 
     fn geometry_for(&self, size: (usize, usize)) -> Geometry {
         let m = self.fuse_seq.len();
+        if let Some(f) = &self.fixed {
+            let sx = size.0 as f64 / f.frame_size.0.max(1) as f64;
+            let sy = size.1 as f64 / f.frame_size.1.max(1) as f64;
+            // S · M · S⁻¹ with S = diag(sx, sy): the maps in this frame size's pixels
+            let rescale = |h: &Homography| {
+                let m = h.0;
+                Homography([m[0], m[1] * sx / sy, m[2] * sx, m[3] * sy / sx, m[4], m[5] * sy, m[6] / sx, m[7] / sy, m[8]])
+            };
+            let c = f.crop;
+            let x0 = ((c.x as f64 * sx).round() as usize).min(size.0);
+            let y0 = ((c.y as f64 * sy).round() as usize).min(size.1);
+            let w = ((c.w as f64 * sx).round() as usize).clamp(1, size.0.saturating_sub(x0).max(1));
+            let h = ((c.h as f64 * sy).round() as usize).clamp(1, size.1.saturating_sub(y0).max(1));
+            return Geometry {
+                size,
+                rect: Rect { x: x0, y: y0, w, h },
+                p: f.maps.iter().map(rescale).collect(),
+                inv_gain: f.gains.iter().map(|g| g.map(|v| if v > 0.0 && v.is_finite() { 1.0 / v } else { 1.0 })).collect(),
+            };
+        }
         let Some(ch) = &self.chain else {
             return Geometry { size, rect: Rect { x: 0, y: 0, w: size.0, h: size.1 }, p: vec![Homography::IDENTITY; m], inv_gain: vec![[1.0; 3]; m] };
         };
@@ -613,6 +668,9 @@ impl FocusStacker {
     }
 
     fn reference_index(&self) -> usize {
+        if let Some(f) = &self.fixed {
+            return f.reference;
+        }
         match &self.chain {
             Some(c) => self.seq.get(c.reference).copied().unwrap_or(0),
             None => self.seq.get(self.seq.len() / 2).copied().unwrap_or(0),
@@ -853,9 +911,10 @@ impl FocusStacker {
                 }
             })
             .collect();
-        let reference = match &self.chain {
-            Some(c) => self.seq.get(c.reference).copied().unwrap_or(0),
-            None => self.seq.get(self.seq.len() / 2).copied().unwrap_or(0),
+        let reference = match (&self.fixed, &self.chain) {
+            (Some(f), _) => f.reference,
+            (None, Some(c)) => self.seq.get(c.reference).copied().unwrap_or(0),
+            (None, None) => self.seq.get(self.seq.len() / 2).copied().unwrap_or(0),
         };
         Ok(FocusResult {
             image,
@@ -969,6 +1028,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_fixed_geometry_restacks_like_the_original() {
+        let b = crate::synth::focus_bracket(200, 140, &crate::synth::FocusSynth { n: 5, ..Default::default() }).unwrap();
+        let frames: Vec<Frame> = b.frames.iter().map(|f| Frame::from_linear_rec2020(f.clone(), None)).collect();
+        let opts = FocusOptions { method: FocusMethod::Average, ..Default::default() };
+        let r = stack_focus(&frames, &opts, &crate::no_progress).unwrap();
+        let fixed = FixedGeometry {
+            frame_size: r.frame_size,
+            maps: r.alignments.iter().map(|a| a.h).collect(),
+            gains: r.alignments.iter().map(|a| a.gain).collect(),
+            crop: r.crop,
+            reference: r.used.iter().position(|&i| i == r.reference).unwrap(),
+        };
+        let mut st = FocusStacker::with_geometry(opts.clone(), fixed.clone()).unwrap();
+        let req = st.next_pass().unwrap().unwrap();
+        assert_eq!(req.pass, Pass::Fuse);
+        for &i in &req.frames {
+            st.push(i, &frames[i], &crate::no_progress).unwrap();
+        }
+        st.end_pass(&crate::no_progress).unwrap();
+        assert!(st.next_pass().unwrap().is_none());
+        let again = st.finish(&crate::no_progress).unwrap();
+        assert_eq!(again.crop, r.crop);
+        let err = again.image.data.iter().zip(&r.image.data).map(|(a, b)| (a[1] - b[1]).abs()).fold(0.0, f32::max);
+        assert!(err < 1e-5, "{err}");
+        // at half size: the maps and crop scale
+        let half: Vec<Frame> = frames
+            .iter()
+            .map(|f| Frame { image: lightcraft_raster::resample::fit(&f.image, 100, 100, lightcraft_raster::resample::Filter::Box), ..f.clone() })
+            .collect();
+        let small = stack_focus_fixed(&half, &opts, fixed);
+        assert_eq!((small.crop.w as f64 / r.crop.w as f64 * 10.0).round(), 5.0);
+    }
+
+    fn stack_focus_fixed(frames: &[Frame], opts: &FocusOptions, fixed: FixedGeometry) -> FocusResult {
+        let mut st = FocusStacker::with_geometry(opts.clone(), fixed).unwrap();
+        while let Some(req) = st.next_pass().unwrap() {
+            for &i in &req.frames {
+                st.push(i, &frames[i], &crate::no_progress).unwrap();
+            }
+            st.end_pass(&crate::no_progress).unwrap();
+        }
+        st.finish(&crate::no_progress).unwrap()
     }
 
     #[test]

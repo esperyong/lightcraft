@@ -1439,5 +1439,20 @@
   "Select Depth Range (near → far)": "Выбрать диапазон глубины (близко → далеко)",
   "This photo has no depth map (focus stacks have one).": "У этого фото нет карты глубины (у стеков фокуса она есть).",
   "Focus Stack Each Bracket": "Стекинг каждой фокус-вилки",
-  "Detect Focus Brackets": "Найти фокус-вилки"
+  "Detect Focus Brackets": "Найти фокус-вилки",
+  "Retouch Focus Stack…": "Ретушь стека фокуса…",
+  "Retouch Focus Stack": "Ретушь стека фокуса",
+  "Focus Stack Project": "Проект стека фокуса",
+  "Paint From": "Рисовать из",
+  "As Merged": "Как объединено",
+  "Frame": "Кадр",
+  "Hardness": "Жёсткость",
+  "Undo Stroke": "Отменить штрих",
+  "Strokes": "Штрихи",
+  "Updating…": "Обновление…",
+  "Opening the focus stack…": "Открытие стека фокуса…",
+  "Focus stack retouched": "Стек фокуса отретуширован",
+  "Erases strokes underneath: the stack as merged.": "Стирает штрихи под ним: стек как был объединён.",
+  "The stack redone with that method (the first stroke takes a moment).": "Стек, пересчитанный этим методом (первый штрих занимает время).",
+  "One photo of the bracket, aligned to the stack.": "Один снимок вилки, выровненный по стеку."
 }

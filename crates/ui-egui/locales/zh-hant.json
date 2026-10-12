@@ -1783,5 +1783,20 @@
   "Select Depth Range (near → far)": "選擇深度範圍（近 → 遠）",
   "This photo has no depth map (focus stacks have one).": "這張照片沒有深度圖（景深合成的結果才有）。",
   "Focus Stack Each Bracket": "逐個對焦包圍進行景深合成",
-  "Detect Focus Brackets": "偵測對焦包圍"
+  "Detect Focus Brackets": "偵測對焦包圍",
+  "Retouch Focus Stack…": "修補景深合成…",
+  "Retouch Focus Stack": "修補景深合成",
+  "Focus Stack Project": "景深合成工程",
+  "Paint From": "取樣來源",
+  "As Merged": "合成原樣",
+  "Frame": "單幀",
+  "Hardness": "硬度",
+  "Undo Stroke": "復原筆觸",
+  "Strokes": "筆觸",
+  "Updating…": "更新中…",
+  "Opening the focus stack…": "正在開啟景深合成…",
+  "Focus stack retouched": "景深合成已修補",
+  "Erases strokes underneath: the stack as merged.": "擦除下面的筆觸：恢復為合成原樣。",
+  "The stack redone with that method (the first stroke takes a moment).": "用該方法重新合成的結果（第一筆需要稍等片刻）。",
+  "One photo of the bracket, aligned to the stack.": "包圍中的一張照片，已與合成結果對齊。"
 }

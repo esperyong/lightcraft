@@ -1766,5 +1766,20 @@
   "Select Depth Range (near → far)": "Seleccionar rango de profundidad (cerca → lejos)",
   "This photo has no depth map (focus stacks have one).": "Esta foto no tiene mapa de profundidad (los apilados de enfoque sí).",
   "Focus Stack Each Bracket": "Apilar cada horquillado de enfoque",
-  "Detect Focus Brackets": "Detectar horquillados de enfoque"
+  "Detect Focus Brackets": "Detectar horquillados de enfoque",
+  "Retouch Focus Stack…": "Retocar apilado de enfoque…",
+  "Retouch Focus Stack": "Retocar apilado de enfoque",
+  "Focus Stack Project": "Proyecto de apilado de enfoque",
+  "Paint From": "Pintar desde",
+  "As Merged": "Como se combinó",
+  "Frame": "Fotograma",
+  "Hardness": "Dureza",
+  "Undo Stroke": "Deshacer trazo",
+  "Strokes": "Trazos",
+  "Updating…": "Actualizando…",
+  "Opening the focus stack…": "Abriendo el apilado de enfoque…",
+  "Focus stack retouched": "Apilado de enfoque retocado",
+  "Erases strokes underneath: the stack as merged.": "Borra los trazos de debajo: el apilado tal como se combinó.",
+  "The stack redone with that method (the first stroke takes a moment).": "El apilado rehecho con ese método (el primer trazo tarda un momento).",
+  "One photo of the bracket, aligned to the stack.": "Una foto del horquillado, alineada con el apilado."
 }

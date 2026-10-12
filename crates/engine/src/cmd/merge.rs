@@ -112,6 +112,53 @@ fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"results": results, "failed": failed, "count": groups.len()}))
 }
 
+/// The strokes parameter of `merge.focusRetouch`.
+fn strokes(p: &Value) -> Result<Vec<crate::focus_retouch::RetouchStroke>> {
+    serde_json::from_value(p.get("strokes").cloned().unwrap_or(json!([]))).map_err(|e| bad("merge.focusRetouch", format!("strokes: {e}")))
+}
+
+/// Retouch a focus stack: preview (a PNG) or the full-size DNG over the stack's own file.
+fn retouch(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = s.targets(p).first().copied().ok_or_else(|| bad("merge.focusRetouch", "no photo"))?;
+    let strokes = strokes(p)?;
+    if bool_or(p, "preview", false) {
+        let edge = p.get("edge").and_then(Value::as_u64).map_or(1600, |e| (e as usize).clamp(64, 4096));
+        let mut r = s.open_retouch(id, edge)?;
+        let img = r.render(&strokes).map_err(|e| bad("merge.focusRetouch", e))?;
+        let mut out = json!({"previewSize": [img.width, img.height], "strokes": strokes.len()});
+        if let Some(path) = str_param(p, "previewPath") {
+            let png = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&img), &lightcraft_codecs::EncodeMeta::default())
+                .map_err(|e| bad("merge.focusRetouch", e.to_string()))?;
+            s.check_write_target(path).map_err(|e| bad("merge.focusRetouch", e))?;
+            crate::export::write_file(path, &png).map_err(|e| bad("merge.focusRetouch", e))?;
+            out["previewPath"] = json!(path);
+        }
+        return Ok(out);
+    }
+    let job = s.plan_retouch(id, strokes)?;
+    let dng = job.run(&|_, _| true).map_err(|e| bad("merge.focusRetouch", e))?;
+    s.finish_retouch(&job, dng)
+}
+
+/// A focus stack's project: its frames, options and strokes.
+fn project(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = s.targets(p).first().copied().ok_or_else(|| bad("merge.focusProject", "no photo"))?;
+    let Some(lightcraft_catalog::Source::File { path }) = s.catalog.photo(id).map(|ph| ph.source.clone()) else {
+        return Err(bad("merge.focusProject", "not a file"));
+    };
+    let pr = crate::focus_retouch::read_project(&path).ok_or_else(|| bad("merge.focusProject", "this photo has no focus-stack project"))?;
+    Ok(json!({
+        "id": id.0,
+        "frames": pr.inputs.iter().map(|f| std::path::Path::new(f).file_name().and_then(|n| n.to_str()).unwrap_or(f)).collect::<Vec<_>>(),
+        "ids": pr.ids,
+        "method": pr.options.method,
+        "radius": pr.options.radius,
+        "smoothing": pr.options.smoothing,
+        "reference": pr.reference,
+        "strokes": pr.strokes,
+    }))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -149,6 +196,24 @@ pub fn specs() -> Vec<CommandSpec> {
             "{ids?, method=depth|average|pyramid (a|b|c; depth), radius=1..30 (8), smoothing=0..10 (4), align=true, alignShift, alignRotation, alignScale, alignBrightness (default: align), order=capture|selection|reverse|auto, every=1 (every n-th photo, first and last always; previews ~12 photos), reference=middle|first|sharpest, crop=common|reference, maxMegapixels=0 (no limit), depthMap=true (embed the depth map in the DNG for Depth Range masks), depthPath? (also as a 16-bit PNG), autoSettings=true, stack=false, preview=false, showDepth=false, previewPath?}",
             can_merge,
             |s, p| run(s, "merge.focusStack", p)
+        ),
+        cmd!(
+            "merge.focusProject",
+            "Focus Stack Project",
+            [],
+            None,
+            "{id?} → {frames, ids, method, radius, smoothing, reference, strokes}: what a focus stack made by LightCraft was made from (saved as <dng>.lcfocus.json)",
+            can_merge,
+            project
+        ),
+        cmd!(
+            "merge.focusRetouch",
+            "Retouch Focus Stack",
+            [],
+            None,
+            "{id?, strokes: [{source: \"base\"|\"a\"|\"b\"|\"c\"|frame index (0-based, focus order), points: [[x, y]…] (0..1 of the result), size (radius, fraction of the long edge), hardness=0.5, opacity=1}], preview=false, previewPath?, edge=1600} — paint pixels from a frame or another method over the stack. Preview: a PNG with the photo's settings; else the DNG is redone at full size over the stack's own file (the un-retouched one kept as <dng>.lcfocus-base; the strokes replace earlier ones, [] removes them) → {id, path, strokes}",
+            can_merge,
+            retouch
         ),
         cmd!(
             "merge.detectFocusBrackets",

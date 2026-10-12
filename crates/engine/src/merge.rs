@@ -124,6 +124,8 @@ pub struct MergeOutput {
     pub info: Value,
     /// Focus stacks: the depth map (0..1, same size as the result).
     pub depth: Option<lightcraft_raster::Plane>,
+    /// Focus stacks: what the stack was made from (saved beside the DNG, for retouching).
+    pub focus_project: Option<crate::focus_retouch::FocusProject>,
 }
 
 pub type ProgressFn<'a> = dyn Fn(f32, &str) -> bool + Sync + 'a;
@@ -161,12 +163,16 @@ impl MergeJob {
         }
         let sub = |a: f32, b: f32| move |f: f32, s: &str| progress(a + (b - a) * f, s);
         let mut depth = None;
+        let mut focus_project = None;
         let (image, color, orientation, metadata, baseline, samples, crop, mut info, ghost) = match &self.kind {
             MergeKind::FocusStack { focus, .. } => {
                 let p = sub(0.0, 0.9);
                 let (r, seconds) = self.run_focus(focus, &p)?;
                 let mut info = focus_info(&r, &self.sources, focus);
                 info["seconds"] = seconds;
+                if self.preview.is_none() {
+                    focus_project = Some(crate::focus_retouch::FocusProject::of(&r, &self.sources, focus));
+                }
                 depth = Some(r.depth);
                 (r.image, r.color, r.orientation, r.metadata, r.baseline_exposure, lightcraft_merge::DngSamples::U16, None, info, None)
             }
@@ -268,7 +274,7 @@ impl MergeJob {
             (None, _) => None,
         };
         progress(1.0, "Done");
-        Ok(MergeOutput { dng, preview, crop, info, depth })
+        Ok(MergeOutput { dng, preview, crop, info, depth, focus_project })
     }
 }
 
@@ -739,6 +745,16 @@ impl Session {
             self.set_develop(id, d, "Auto Crop")?;
         }
         let mut info = out.info;
+        if let Some(project) = &out.focus_project {
+            // what the stack was made from, for retouching it later (a stack without it still works)
+            match serde_json::to_string_pretty(project) {
+                Ok(text) => match crate::export::write_file_durable(&crate::focus_retouch::project_path(&path), text.as_bytes()) {
+                    Ok(()) => info["project"] = json!(crate::focus_retouch::project_path(&path)),
+                    Err(e) => log::warn!("focus stack project not saved: {e}"),
+                },
+                Err(e) => log::warn!("focus stack project not saved: {e}"),
+            }
+        }
         if let (Some(dp), Some(d)) = (&job.finish.depth_path, &out.depth) {
             self.check_write_target(dp).map_err(EngineError::Other)?;
             crate::export::write_file(dp, &depth_png(d).map_err(EngineError::Other)?).map_err(EngineError::Other)?;

@@ -1766,5 +1766,20 @@
   "Select Depth Range (near → far)": "Selecionar faixa de profundidade (perto → longe)",
   "This photo has no depth map (focus stacks have one).": "Esta foto não tem mapa de profundidade (empilhamentos de foco têm).",
   "Focus Stack Each Bracket": "Empilhar cada bracketing de foco",
-  "Detect Focus Brackets": "Detectar bracketing de foco"
+  "Detect Focus Brackets": "Detectar bracketing de foco",
+  "Retouch Focus Stack…": "Retocar empilhamento de foco…",
+  "Retouch Focus Stack": "Retocar empilhamento de foco",
+  "Focus Stack Project": "Projeto de empilhamento de foco",
+  "Paint From": "Pintar a partir de",
+  "As Merged": "Como mesclado",
+  "Frame": "Quadro",
+  "Hardness": "Dureza",
+  "Undo Stroke": "Desfazer traço",
+  "Strokes": "Traços",
+  "Updating…": "Atualizando…",
+  "Opening the focus stack…": "Abrindo o empilhamento de foco…",
+  "Focus stack retouched": "Empilhamento de foco retocado",
+  "Erases strokes underneath: the stack as merged.": "Apaga os traços por baixo: o empilhamento como mesclado.",
+  "The stack redone with that method (the first stroke takes a moment).": "O empilhamento refeito com esse método (o primeiro traço leva um momento).",
+  "One photo of the bracket, aligned to the stack.": "Uma foto do bracketing, alinhada ao empilhamento."
 }

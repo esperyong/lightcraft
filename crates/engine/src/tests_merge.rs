@@ -185,3 +185,54 @@ fn focus_brackets_are_detected_and_stacked_in_a_batch() {
     assert_eq!((r["results"].as_array().unwrap().len(), r["failed"].as_array().unwrap().len()), (1, 1), "{r}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_focus_stack_is_retouched_from_a_frame_and_back() {
+    let dir = temp_dir("focus-retouch");
+    let mut paths = Vec::new();
+    for (i, d) in lightcraft_merge::synth::focus_bracket_dngs(240, 160, 5, 0).unwrap().into_iter().enumerate() {
+        let p = dir.join(format!("R_{i}.dng"));
+        std::fs::write(&p, d).unwrap();
+        paths.push(p.to_string_lossy().to_string());
+    }
+    let mut s = Session::new().with_fs();
+    let ids = import(&mut s, paths);
+    let r = s.execute("merge.focusStack", &json!({"ids": ids, "autoSettings": false})).unwrap();
+    let id = lightcraft_catalog::PhotoId(r["id"].as_u64().unwrap());
+    let path = r["path"].as_str().unwrap().to_string();
+    assert!(std::path::Path::new(&crate::focus_retouch::project_path(&path)).exists(), "{r}");
+    assert!(s.has_focus_project(id));
+    let pr = s.execute("merge.focusProject", &json!({"id": id.0})).unwrap();
+    assert_eq!(pr["frames"].as_array().unwrap().len(), 5, "{pr}");
+    let centre = |s: &Session| {
+        let b = std::fs::read(&path).unwrap();
+        let f = lightcraft_merge::load_frame(&b, None, true).unwrap();
+        let _ = s;
+        (f.image.get(f.image.width / 2, f.image.height / 2), f.image.get(4, 4))
+    };
+    let (base_c, base_corner) = centre(&s);
+    // a preview: nothing written
+    let png = dir.join("retouch.png");
+    let stroke = json!([{"source": 0, "points": [[0.5, 0.5]], "size": 0.1, "hardness": 1.0}]);
+    let pv = s.execute("merge.focusRetouch", &json!({"id": id.0, "strokes": stroke, "preview": true, "previewPath": png})).unwrap();
+    assert!(png.exists() && pv["previewSize"][0].as_u64().unwrap() > 100, "{pv}");
+    assert_eq!(centre(&s).0, base_c, "a preview leaves the DNG alone");
+    // the stroke at full size: the centre now comes from frame 0, the corner is untouched
+    let done = s.execute("merge.focusRetouch", &json!({"id": id.0, "strokes": stroke})).unwrap();
+    assert_eq!(done["strokes"], 1);
+    assert!(std::path::Path::new(&crate::focus_retouch::base_path(&path)).exists());
+    let (c, corner) = centre(&s);
+    assert!((0..3).any(|k| (c[k] - base_c[k]).abs() > 1e-3), "{c:?} vs {base_c:?}");
+    assert!((0..3).all(|k| (corner[k] - base_corner[k]).abs() < 1e-4), "{corner:?} vs {base_corner:?}");
+    assert_eq!(s.execute("merge.focusProject", &json!({"id": id.0})).unwrap()["strokes"].as_array().unwrap().len(), 1);
+    // no strokes: back to the stack as merged
+    s.execute("merge.focusRetouch", &json!({"id": id.0, "strokes": []})).unwrap();
+    let (c, _) = centre(&s);
+    assert!((0..3).all(|k| (c[k] - base_c[k]).abs() < 1e-4), "{c:?} vs {base_c:?}");
+    // a stroke from method C, and bad strokes are errors
+    s.execute("merge.focusRetouch", &json!({"id": id.0, "strokes": [{"source": "c", "points": [[0.2, 0.2], [0.3, 0.3]], "size": 0.05}]})).unwrap();
+    assert!(s.execute("merge.focusRetouch", &json!({"id": id.0, "strokes": [{"source": 9, "points": [[0.5, 0.5]], "size": 0.1}]})).is_err());
+    assert!(s.execute("merge.focusRetouch", &json!({"id": id.0, "strokes": [{"source": "x", "points": [[0.5, 0.5]], "size": 0.1}]})).is_err());
+    assert!(s.execute("merge.focusRetouch", &json!({"id": ids[0], "strokes": []})).is_err(), "not a stack");
+    let _ = std::fs::remove_dir_all(&dir);
+}

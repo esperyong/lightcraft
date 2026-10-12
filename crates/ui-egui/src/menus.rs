@@ -155,6 +155,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("merge.hdrPanoramaLast", "HDR Panorama with Last Settings", None, "Photo>Photo Merge"),
     ("merge.focusStackLast", "Focus Stack with Last Settings", Some("Ctrl+Alt+Shift+F"), "Photo>Photo Merge"),
     ("merge.focusStackBrackets", "Focus Stack Each Bracket", None, "Photo>Photo Merge"),
+    ("dialog.focusRetouch", "Retouch Focus Stack…", None, "Photo>Photo Merge"),
     ("file.addPhotos", "Import Photos…", Some("Cmd+Shift+I"), "File"),
     ("file.addFolder", "Import from Folder…", None, "File"),
     ("file.importLightroom", "Import Lightroom Catalog…", None, "File"),
@@ -947,6 +948,7 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
         "merge.hdrPanoramaLast" => crate::merge::start_last(app, "merge.hdrPanorama"),
         "merge.focusStackLast" => crate::merge::start_last(app, "merge.focusStack"),
         "merge.focusStackBrackets" => crate::merge::start_brackets(app),
+        "dialog.focusRetouch" => crate::focus_retouch::open(app),
         "dialog.mergeHdr" => crate::merge::open(app, "merge.hdr"),
         "dialog.faceModel" => {
             let path = match p.get("path").and_then(Value::as_str) {
@@ -1485,6 +1487,7 @@ pub fn ui_enabled(app: &LightcraftApp, id: &str) -> bool {
             app.session.targets(&serde_json::json!({})).len() >= 2 && app.merge.final_task.is_none()
         }
         "merge.focusStackBrackets" => app.merge.final_task.is_none() && app.session.catalog.len() >= 2,
+        "dialog.focusRetouch" => !app.retouch.busy() && app.session.active().is_some_and(|id| app.session.has_focus_project(id)),
         _ => true,
     }
 }

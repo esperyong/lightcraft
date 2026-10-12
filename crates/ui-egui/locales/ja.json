@@ -1778,5 +1778,20 @@
   "Select Depth Range (near → far)": "深度範囲を選択（近 → 遠）",
   "This photo has no depth map (focus stacks have one).": "この写真には深度マップがありません（深度合成の結果にはあります）。",
   "Focus Stack Each Bracket": "各フォーカスブラケットを深度合成",
-  "Detect Focus Brackets": "フォーカスブラケットを検出"
+  "Detect Focus Brackets": "フォーカスブラケットを検出",
+  "Retouch Focus Stack…": "深度合成をレタッチ…",
+  "Retouch Focus Stack": "深度合成をレタッチ",
+  "Focus Stack Project": "深度合成プロジェクト",
+  "Paint From": "描画元",
+  "As Merged": "合成どおり",
+  "Frame": "コマ",
+  "Hardness": "硬さ",
+  "Undo Stroke": "ストロークを取り消す",
+  "Strokes": "ストローク",
+  "Updating…": "更新中…",
+  "Opening the focus stack…": "深度合成を開いています…",
+  "Focus stack retouched": "深度合成をレタッチしました",
+  "Erases strokes underneath: the stack as merged.": "下のストロークを消します：合成どおりの状態に戻します。",
+  "The stack redone with that method (the first stroke takes a moment).": "その方式で合成し直した結果（最初のストロークは少し時間がかかります）。",
+  "One photo of the bracket, aligned to the stack.": "ブラケットの1枚（合成に位置合わせ済み）。"
 }

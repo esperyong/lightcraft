@@ -1921,5 +1921,20 @@
   "Select Depth Range (near → far)": "Tiefenbereich wählen (nah → fern)",
   "This photo has no depth map (focus stacks have one).": "Dieses Foto hat keine Tiefenkarte (Fokus-Stacks haben eine).",
   "Focus Stack Each Bracket": "Jede Fokusreihe stacken",
-  "Detect Focus Brackets": "Fokusreihen erkennen"
+  "Detect Focus Brackets": "Fokusreihen erkennen",
+  "Retouch Focus Stack…": "Fokus-Stack retuschieren…",
+  "Retouch Focus Stack": "Fokus-Stack retuschieren",
+  "Focus Stack Project": "Fokus-Stack-Projekt",
+  "Paint From": "Malen aus",
+  "As Merged": "Wie zusammengefügt",
+  "Frame": "Einzelbild",
+  "Hardness": "Härte",
+  "Undo Stroke": "Strich rückgängig",
+  "Strokes": "Striche",
+  "Updating…": "Wird aktualisiert…",
+  "Opening the focus stack…": "Fokus-Stack wird geöffnet…",
+  "Focus stack retouched": "Fokus-Stack retuschiert",
+  "Erases strokes underneath: the stack as merged.": "Löscht darunterliegende Striche: der Stack wie zusammengefügt.",
+  "The stack redone with that method (the first stroke takes a moment).": "Der Stack mit dieser Methode neu berechnet (der erste Strich dauert einen Moment).",
+  "One photo of the bracket, aligned to the stack.": "Ein Foto der Reihe, am Stack ausgerichtet."
 }

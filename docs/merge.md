@@ -109,6 +109,17 @@ optionally stacks each. `merge.focusStackBatch {groups? | the same scope, …mer
 stacks them one after the other (a bracket that fails is reported, the others still run). In the app,
 Photo Merge ▸ Focus Stack Each Bracket queues them in the background with the last focus-stack options.
 
+**Retouching.** Every stack saves what it was made from beside its DNG, `<dng>.lcfocus.json`: the frames
+(paths, focus order), the options, each frame's map onto the result and its gain, the crop. Photo Merge ▸
+Retouch Focus Stack… (or `merge.focusRetouch`) paints over the stack with pixels from one aligned frame
+(*Frame*), from the stack redone with method A, B or C, or from the stack as merged (an eraser), with a
+round brush (size as a share of the long edge, hardness, opacity). The dialog previews at ≤ 1600 px
+with the photo's settings (a method's source is restacked at that size with the saved geometry — no new
+alignment — the first time a stroke uses it); Apply redoes it at full size in the background and writes
+the DNG over the stack's own file, keeping the un-retouched one as `<dng>.lcfocus-base`, so strokes can be
+changed or removed later (`strokes: []` restores the stack as merged). `merge.focusProject` lists the
+frames and strokes. Painting happens on the whole picture (no zoom yet).
+
 **For agents:** `merge.focusStack {ids, preview: true, previewPath, every: 4}` for a quick look (every 4th
 photo, ≤ 1024 px), compare `method: "a"|"b"|"c"`, `showDepth: true` to see the depth map, then run it
 without `preview`. `order: "auto"` when the files aren't in focus order.
@@ -149,5 +160,5 @@ scale in `BaselineExposure`; raw sources keep their DNG colour tags (camera RGB)
 - Panorama output is limited to `maxMegapixels` (default 40) — blending memory is ~25 bytes/pixel.
 - The browser build has no file access for merges yet.
 - Focus stack: method C, the depth refinement and the gather pass run on the CPU; its speed against
-  Helicon Focus has to be measured on a Mac (`#18`). No retouching between methods/frames after the
-  merge yet.
+  Helicon Focus has to be measured on a Mac (`#18`). Retouching paints on a ≤ 1600 px view of the whole
+  picture (no zoom); a retouched stack's depth map is the merged one.

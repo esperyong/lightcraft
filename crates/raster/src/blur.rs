@@ -71,6 +71,21 @@ fn box_v<T: Pixel>(src: &Image<T>, dst: &mut Image<T>, r: usize) {
     });
 }
 
+/// Mean over the `(2r + 1)²` window around each pixel (clamped edges). `r == 0` returns a copy.
+pub fn box_mean<T: Pixel>(img: &Image<T>, r: usize) -> Image<T> {
+    if r == 0 || img.is_empty() {
+        return img.clone();
+    }
+    let mut a = img.clone();
+    par_rows(&mut a.data, img.width, |_, row| {
+        let mut tmp = Vec::with_capacity(row.len());
+        box_row(row, &mut tmp, r);
+    });
+    let mut b = Image::<T>::new(img.width, img.height);
+    box_v(&a, &mut b, r);
+    b
+}
+
 /// Blur with Gaussian `sigma` (pixels). `sigma <= 0.3` returns a copy.
 pub fn gaussian<T: Pixel>(img: &Image<T>, sigma: f32) -> Image<T> {
     if sigma <= 0.3 || img.is_empty() {
@@ -112,6 +127,18 @@ mod tests {
         // peak moved to the centre and symmetric
         assert!((b.get(45, 50) - b.get(55, 50)).abs() < 1e-6);
         assert!((b.get(50, 45) - b.get(50, 55)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn box_mean_averages_the_window() {
+        let img = Image::<f32>::from_fn(9, 7, |x, y| (x + 10 * y) as f32);
+        let b = box_mean(&img, 1);
+        // interior: the mean of a linear ramp over a symmetric window is the centre value
+        assert!((b.get(4, 3) - img.get(4, 3)).abs() < 1e-4);
+        // corner: clamped edges repeat the border samples
+        let want = (4.0 * 0.0 + 2.0 * 1.0 + 2.0 * 10.0 + 11.0) / 9.0;
+        assert!((b.get(0, 0) - want).abs() < 1e-4, "{}", b.get(0, 0));
+        assert_eq!(box_mean(&img, 0).data, img.data);
     }
 
     #[test]

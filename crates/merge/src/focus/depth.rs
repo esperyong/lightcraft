@@ -316,6 +316,11 @@ impl Resolved {
         self.image.data.len() * 12 + self.depth.data.len() * 8 + self.need.len() + self.wsum.len() * 4
     }
 
+    /// Share of the pixels whose colours the gather pass provides.
+    pub fn gathered(&self) -> f32 {
+        self.need.iter().filter(|&&n| n).count() as f32 / self.need.len().max(1) as f32
+    }
+
     /// Positions whose colours marked pixels still need.
     pub fn needed(&self) -> Vec<usize> {
         let last = self.last as f32;

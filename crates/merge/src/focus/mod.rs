@@ -22,7 +22,9 @@
 //! 3. *Fuse* (full resolution): each frame resampled into the reference geometry, its focus
 //!    measured ([`measure`]) and folded into the method's state.
 //! 4. *Gather* (method B, only when needed): colours for pixels whose smoothed depth moved away
-//!    from the frames the fuse pass kept.
+//!    from the frames the fuse pass kept. At half size: those are the low-confidence pixels, with
+//!    little detail of their own, and a raw is then binned instead of demosaiced (the slowest part
+//!    of decoding it).
 //!
 //! Colours always come from the source frames (no sharpening, no tone changes); the result is
 //! scene-linear like its sources, written as a linear DNG by the caller. Our own implementation
@@ -297,6 +299,8 @@ pub struct FocusResult {
     pub warnings: Vec<String>,
     /// Where the fuse pass ran: "CPU", or the device's name (with why it fell back, if it did).
     pub device: String,
+    /// Method B: share of the pixels whose colours came from the gather pass.
+    pub gathered: f32,
     pub color: FrameColor,
     pub raw: bool,
     pub orientation: Orientation,
@@ -357,6 +361,9 @@ pub fn stack_focus(src: &dyn FrameSource, opts: &FocusOptions, progress: &Progre
     }
     st.finish(progress)
 }
+
+/// Below this long edge the gather pass takes its frames at full size.
+const MIN_GATHER_EDGE: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
@@ -421,6 +428,8 @@ pub struct FocusStacker {
     fuser: Option<Fuser>,
     resolved: Option<depth::Resolved>,
     gather: Vec<usize>,
+    /// Share of the pixels the gather pass colours.
+    gathered: f32,
     outcome: Option<(Rgb32f, Plane, Option<Plane>)>,
     reference_meta: Option<RefMeta>,
     warnings: Vec<String>,
@@ -493,6 +502,7 @@ impl FocusStacker {
             fuser: None,
             resolved: None,
             gather: Vec::new(),
+            gathered: 0.0,
             outcome: None,
             reference_meta: None,
             warnings: Vec::new(),
@@ -567,7 +577,10 @@ impl FocusStacker {
                 (Pass::Align, self.seq.clone(), self.cap(self.opts.align.work_edge))
             }
             Stage::Fuse => (Pass::Fuse, self.fuse_seq.iter().map(|&p| self.seq[p]).collect(), self.opts.max_edge),
-            Stage::Gather => (Pass::Gather, self.gather.iter().map(|&p| self.seq[self.fuse_seq[p]]).collect(), self.opts.max_edge),
+            Stage::Gather => {
+                let half = self.geometry.as_ref().map(|g| g.size.0.max(g.size.1).div_ceil(2)).filter(|&e| e >= MIN_GATHER_EDGE);
+                (Pass::Gather, self.gather.iter().map(|&p| self.seq[self.fuse_seq[p]]).collect(), half.or(self.opts.max_edge))
+            }
             Stage::Done => return Ok(None),
         };
         self.active = Some(Active { pass, frames: Vec::clone(&frames), pushed: 0 });
@@ -763,10 +776,13 @@ impl FocusStacker {
     fn gather_one(&mut self, k: usize, img: &Rgb32f, clip: f32) -> Result<()> {
         let pos = self.gather.get(k).copied().ok_or_else(|| MergeError::Mismatch("focus stack: unexpected photo".into()))?;
         let (Some(g), Some(r)) = (&self.geometry, self.resolved.as_mut()) else { return Ok(()) };
-        if (img.width, img.height) != g.size {
+        // the frame at the size asked for (half), or any size up to the stack's of the same shape
+        let (sx, sy) = (img.width as f64 / g.size.0.max(1) as f64, img.height as f64 / g.size.1.max(1) as f64);
+        if img.width == 0 || img.height == 0 || sx > 1.0 || sy > 1.0 || (sx / sy - 1.0).abs() > 0.02 {
             return Err(MergeError::Mismatch("focus stacking needs photos of the same size".into()));
         }
-        let h = g.p.get(pos).copied().unwrap_or(Homography::IDENTITY);
+        let scale = Homography([sx, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 1.0]);
+        let h = scale.mul(&g.p.get(pos).copied().unwrap_or(Homography::IDENTITY));
         let ig = g.inv_gain.get(pos).copied().unwrap_or([1.0; 3]);
         let warped = measure::warp(img, &h, g.rect, ig, clip, self.opts.bicubic, &mut self.frame_buf);
         r.add(pos, &warped);
@@ -862,6 +878,7 @@ impl FocusStacker {
                             interpolate: self.opts.interpolate,
                         });
                         let needed = r.needed();
+                        self.gathered = r.gathered();
                         if needed.is_empty() {
                             let (img, d, c) = r.done();
                             self.outcome = Some((img, d, Some(c)));
@@ -930,6 +947,7 @@ impl FocusStacker {
             frame_size: geometry.size,
             warnings: self.warnings,
             device: self.device_note,
+            gathered: self.gathered,
             color: meta.color,
             raw: meta.raw,
             orientation: Orientation::Normal,

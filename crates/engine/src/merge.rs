@@ -509,6 +509,7 @@ fn focus_info(r: &FocusResult, sources: &[(PhotoId, String)], opts: &FocusOption
         },
         "warnings": r.warnings,
         "device": r.device,
+        "gathered": r.gathered,
     })
 }
 

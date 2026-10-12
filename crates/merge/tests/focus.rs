@@ -4,7 +4,7 @@
 use lightcraft_geom::Homography;
 use lightcraft_merge::focus::{AlignOptions, FocusMethod, FocusOptions, FocusOrder, FocusResult, FocusStacker, Pass, stack_focus};
 use lightcraft_merge::synth::{FocusBracket, FocusSynth, focus_bracket};
-use lightcraft_merge::{Frame, MergeError, no_progress};
+use lightcraft_merge::{Frame, FrameSource, MergeError, no_progress};
 use lightcraft_raster::Rgb32f;
 
 const W: usize = 640;
@@ -354,4 +354,27 @@ fn cancelling_and_bad_inputs_are_errors() {
     assert!(matches!(stack_focus(&odd, &FocusOptions::default(), &no_progress), Err(MergeError::Mismatch(_))));
     let no_align = FocusOptions { align: AlignOptions { enabled: false, brightness: false, ..Default::default() }, ..Default::default() };
     assert!(matches!(stack_focus(&odd, &no_align, &no_progress), Err(MergeError::Mismatch(_))));
+}
+
+/// The gather pass asks for half-size frames (a raw is then binned, not demosaiced) and samples
+/// them into the full-size result.
+#[test]
+fn the_gather_pass_takes_half_size_frames() {
+    let b = bracket(FocusSynth::default());
+    let fr = frames(&b);
+    let mut st = FocusStacker::new(b.frames.len(), FocusOptions::default()).unwrap();
+    let mut gather_edge = None;
+    while let Some(req) = st.next_pass().unwrap() {
+        if req.pass == Pass::Gather {
+            gather_edge = req.max_edge;
+        }
+        for &i in &req.frames {
+            let f = fr.frame(i, req.max_edge).unwrap();
+            st.push(i, &f, &no_progress).unwrap();
+        }
+        st.end_pass(&no_progress).unwrap();
+    }
+    assert_eq!(gather_edge, Some(W.div_ceil(2)));
+    let r = st.finish(&no_progress).unwrap();
+    assert!(r.gathered > 0.0 && r.gathered < 0.5, "{}", r.gathered);
 }

@@ -66,7 +66,9 @@ fn stack(
     while let Some(req) = st.next_pass().map_err(|e| e.to_string())? {
         let (pw, pc) = (Instant::now(), cpu_ms());
         for &i in &req.frames {
-            let src = if req.max_edge.is_some_and(|e| e < edge) { &small[tri(i)] } else { &full[tri(i)] };
+            // in memory the gather pass samples the full frames (it asks for half size to spare
+            // a raw's demosaicing, which frames in memory don't need)
+            let src = if req.pass != Pass::Gather && req.max_edge.is_some_and(|e| e < edge) { &small[tri(i)] } else { &full[tri(i)] };
             st.push(i, src, &no_progress).map_err(|e| e.to_string())?;
             peak = peak.max(st.state_bytes());
         }

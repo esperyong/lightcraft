@@ -91,7 +91,11 @@ frames (as memory allows) while the stacker works on the current ones.
    gain, its focus measured, folded into the method's state. With a GPU, methods A and B do this on
    the device (`crates/gpu/src/focus.rs`), their state staying there until the end of the pass; a
    device error repeats the pass on the CPU. `info.device` says where it ran.
-4. *Gather* (method B, only when needed).
+4. *Gather* (method B, only when needed): colours for the pixels whose smoothed depth left the frames
+   the fuse pass kept (`info.gathered`: their share), from frames at half size. Those are the
+   low-confidence pixels, with little detail of their own, and a raw at half size is binned instead of
+   demosaiced: on a 60-frame ARW bracket the full-size pass took as long as the fuse pass. Synthetic
+   bracket: B 34.76 → 34.65 dB, halo rings unchanged within 2 %.
 
 **Output:** a 16-bit linear DNG `<first photo in focus order>-Focus.dng` with the reference frame's colour
 tags (raw sources stay camera RGB, so white balance and the rest stay editable). The depth map goes
@@ -99,8 +103,9 @@ into the DNG as a DNG 1.6 semantic mask (`urn:app:lightcraft:focus:depth`, 16-bi
 first photo of the focus order) unless `depthMap: false`: Masking ▸ Depth (a Depth Range mask) selects
 on it, e.g. to darken or blur what lies behind the subject. Optionally also as a 16-bit grey PNG
 (`depthPath`). `info` reports the method, focus order, used and
-skipped photos, the reference, alignment ranges (shift, rotation, scale, lowest NCC), warnings and the
-seconds each pass took (`LIGHTCRAFT_PROFILE=1` also prints them).
+skipped photos, the reference, alignment ranges (shift, rotation, scale, lowest NCC), warnings, where
+the fuse pass ran (`device`), the share of gathered pixels and the seconds each pass took
+(`LIGHTCRAFT_PROFILE=1` also prints them).
 
 **Many brackets.** `merge.detectFocusBrackets {ids?, gapSecs=2, minFrames=3, sameExposure=true, stack}`
 finds focus brackets (runs of photos at most `gapSecs` apart with the same camera, lens, focal length

@@ -236,3 +236,46 @@ fn a_focus_stack_is_retouched_from_a_frame_and_back() {
     assert!(s.execute("merge.focusRetouch", &json!({"id": ids[0], "strokes": []})).is_err(), "not a stack");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A merge of vendor raws (no colour matrix: white balance as multipliers, look fitted to the
+/// camera JPEG) opens with the sources' colours. Before, it lost the white balance (green) and the
+/// camera look (darker). Uses the raw corpus (`cargo xtask corpus --download`); skips without it.
+#[test]
+fn a_merge_of_vendor_raws_keeps_their_colours() {
+    let corpus = std::env::var_os("LIGHTCRAFT_CORPUS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus"));
+    let Ok(arw) = std::fs::read(corpus.join("raw/arw-sony-a7m3-compressed.arw")) else {
+        eprintln!("skip: no raw corpus");
+        return;
+    };
+    let dir = temp_dir("vendor");
+    let (a, b) = (dir.join("A.arw"), dir.join("B.arw"));
+    std::fs::write(&a, &arw).unwrap();
+    // the same picture twice (a byte more, so the library keeps both)
+    let mut arw2 = arw;
+    arw2.push(0);
+    std::fs::write(&b, arw2).unwrap();
+    let mut s = Session::new().with_fs();
+    let ids = import(&mut s, vec![a.to_string_lossy().into(), b.to_string_lossy().into()]);
+    assert_eq!(ids.len(), 2);
+    let r = s.execute("merge.focusStack", &json!({"ids": ids, "method": "a", "maxMegapixels": 1.5, "autoSettings": false})).unwrap();
+    let id = lightcraft_catalog::PhotoId(r["id"].as_u64().unwrap());
+    let mean = |s: &mut Session, id: lightcraft_catalog::PhotoId| {
+        let img = s.render_now(id, 320, 320).unwrap().image;
+        let n = (img.width * img.height) as f64;
+        let mut m = [0f64; 3];
+        for p in &img.data {
+            for c in 0..3 {
+                m[c] += p[c] as f64 / n;
+            }
+        }
+        m
+    };
+    let src = mean(&mut s, lightcraft_catalog::PhotoId(ids[0]));
+    let merged = mean(&mut s, id);
+    for c in 0..3 {
+        assert!((src[c] - merged[c]).abs() < 3.0, "source {src:?}, merged {merged:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

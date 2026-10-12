@@ -14,6 +14,8 @@
 - Photo Merge ▸ Retouch Focus Stack… paints over a stack with pixels from one of its photos or from another method,
   to mend a halo or a lost bristle; the strokes stay editable.
 - With a GPU, methods A and B stack on it.
+- Merges of Sony, Nikon, Fujifilm and other raws without colour matrices (HDR, panorama and focus stack) keep their
+  white balance and camera look: they used to open green and too dark.
 
 ### Apple's raw decoder on the Mac
 - On macOS 12+, raws LightCraft can't decode yet (compressed Olympus ORF, Nikon High Efficiency NEF…) develop with

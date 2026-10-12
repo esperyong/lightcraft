@@ -56,11 +56,7 @@ impl CameraProfile {
     /// Whether the data is usable (bounded matrix, table shape matching its data).
     fn valid(&self) -> bool {
         let matrix = self.matrix.iter().flatten().all(|v| v.is_finite() && v.abs() < 8.0) && Mat3(self.matrix).inverse().is_some();
-        let table = self.hue_sat.as_ref().is_none_or(|t| {
-            let dims = (1..=4096).contains(&t.hue_divisions) && (2..=4096).contains(&t.sat_divisions) && (1..=4096).contains(&t.val_divisions);
-            let len = t.hue_divisions.checked_mul(t.sat_divisions).and_then(|n| n.checked_mul(t.val_divisions));
-            dims && len == Some(t.data.len()) && t.data.iter().flatten().all(|v| v.is_finite()) && t.data.iter().all(|e| e[1] >= 0.0 && e[2] >= 0.0)
-        });
+        let table = self.hue_sat.as_ref().is_none_or(crate::camera_preview::hue_sat_valid);
         self.version == VERSION && !self.model.is_empty() && matrix && table
     }
 }

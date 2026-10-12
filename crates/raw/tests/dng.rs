@@ -1030,3 +1030,23 @@ fn written_semantic_masks_read_back() {
     let bad = SemanticMask { data: vec![0; 5], ..depth };
     assert!(write_dng(&raw, &DngWriteOptions { semantic_masks: vec![bad], ..Default::default() }).is_err());
 }
+
+#[test]
+fn written_private_data_reads_back_by_name() {
+    let raw = synthetic(64, 40, None, 3);
+    let mut data = b"LightCraft\0".to_vec();
+    data.extend_from_slice(br#"{"look":1}"#);
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let bytes = write_dng(&raw, &DngWriteOptions { order, private_data: Some(data.clone()), ..Default::default() }).unwrap();
+        assert_eq!(lightcraft_raw::dng_private_data(&bytes, "LightCraft").as_deref(), Some(&br#"{"look":1}"#[..]));
+        assert_eq!(lightcraft_raw::dng_private_data(&bytes, "Adobe"), None);
+        assert_eq!(lightcraft_raw::dng_private_data(&bytes, "Light"), None, "the whole name must match");
+        assert_eq!(decode(&bytes).unwrap().data, raw.data);
+    }
+    let plain = write_dng(&raw, &DngWriteOptions::default()).unwrap();
+    assert_eq!(lightcraft_raw::dng_private_data(&plain, "LightCraft"), None);
+    assert_eq!(lightcraft_raw::dng_private_data(b"not a tiff", "LightCraft"), None);
+    // without a NUL-terminated name it isn't DNG private data: refused, not written
+    assert!(write_dng(&raw, &DngWriteOptions { private_data: Some(b"no name".to_vec()), ..Default::default() }).is_err());
+    assert!(write_dng(&raw, &DngWriteOptions { private_data: Some(Vec::new()), ..Default::default() }).is_err());
+}

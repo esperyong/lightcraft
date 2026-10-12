@@ -164,7 +164,8 @@ impl MergeJob {
         let sub = |a: f32, b: f32| move |f: f32, s: &str| progress(a + (b - a) * f, s);
         let mut depth = None;
         let mut focus_project = None;
-        let (image, color, orientation, metadata, baseline, samples, crop, mut info, ghost) = match &self.kind {
+        // `look`: the source whose colours the result keeps (its camera look goes with the DNG)
+        let (image, color, orientation, metadata, baseline, samples, crop, mut info, ghost, look) = match &self.kind {
             MergeKind::FocusStack { focus, .. } => {
                 let p = sub(0.0, 0.9);
                 let (r, seconds) = self.run_focus(focus, &p)?;
@@ -174,7 +175,8 @@ impl MergeJob {
                     focus_project = Some(crate::focus_retouch::FocusProject::of(&r, &self.sources, focus));
                 }
                 depth = Some(r.depth);
-                (r.image, r.color, r.orientation, r.metadata, r.baseline_exposure, lightcraft_merge::DngSamples::U16, None, info, None)
+                let look = r.reference;
+                (r.image, r.color, r.orientation, r.metadata, r.baseline_exposure, lightcraft_merge::DngSamples::U16, None, info, None, look)
             }
             MergeKind::Hdr { hdr } => {
                 let frames = self.load(false, progress, (0.0, 0.3))?;
@@ -186,13 +188,25 @@ impl MergeJob {
                     "alignment": r.alignments.iter().map(|a| json!({"model": a.model, "inliers": a.inliers, "rmsPx": a.rms})).collect::<Vec<_>>(),
                 });
                 let ghost = (!r.ghost.data.is_empty()).then(|| r.ghost.oriented(r.orientation));
-                (r.radiance, r.color, r.orientation, r.metadata, r.baseline_exposure, lightcraft_merge::DngSamples::Half, None, info, ghost)
+                (
+                    r.radiance,
+                    r.color,
+                    r.orientation,
+                    r.metadata,
+                    r.baseline_exposure,
+                    lightcraft_merge::DngSamples::Half,
+                    None,
+                    info,
+                    ghost,
+                    r.reference,
+                )
             }
             MergeKind::Panorama { pano } => {
                 let frames = self.load(true, progress, (0.0, 0.25))?;
                 let p = sub(0.25, 0.9);
                 let r = lightcraft_merge::stitch(frames, pano, &p).map_err(err)?;
                 let info = pano_info(&r, &self.sources);
+                let look = r.used.first().copied().unwrap_or(0);
                 (
                     r.image,
                     r.color,
@@ -203,6 +217,7 @@ impl MergeJob {
                     r.crop,
                     info,
                     None,
+                    look,
                 )
             }
             MergeKind::HdrPanorama { hdr, pano, bracket } => {
@@ -214,11 +229,13 @@ impl MergeJob {
                 }
                 let groups = frames.len() / b;
                 let mut merged = Vec::new();
+                let mut references = Vec::new();
                 let mut it = frames.into_iter();
                 for g in 0..groups {
                     let set: Vec<Frame> = it.by_ref().take(b).collect();
                     let p = sub(0.2 + 0.4 * g as f32 / groups as f32, 0.2 + 0.4 * (g + 1) as f32 / groups as f32);
                     let r = lightcraft_merge::merge_hdr(set, hdr, &p).map_err(err)?;
+                    references.push(g * b + r.reference);
                     let mut f = Frame {
                         image: r.radiance,
                         clip: f32::INFINITY,
@@ -236,6 +253,7 @@ impl MergeJob {
                 let r = lightcraft_merge::stitch(merged, pano, &p).map_err(err)?;
                 let mut info = pano_info(&r, &self.sources);
                 info["bracket"] = json!(b);
+                let look = r.used.first().and_then(|&g| references.get(g)).copied().unwrap_or(0);
                 (
                     r.image,
                     r.color,
@@ -246,6 +264,7 @@ impl MergeJob {
                     r.crop,
                     info,
                     None,
+                    look,
                 )
             }
         };
@@ -263,7 +282,12 @@ impl MergeJob {
             (MergeKind::FocusStack { depth_map: true, .. }, Some(d)) => lightcraft_merge::focus::depth_mask(d).into_iter().collect(),
             _ => Vec::new(),
         };
-        let dng = lightcraft_merge::write_linear_dng_with_masks(&image, &color, orientation, &metadata, baseline, samples, masks).map_err(err)?;
+        let private_data = match &color {
+            lightcraft_merge::FrameColor::Camera(_) => self.camera_look(look),
+            lightcraft_merge::FrameColor::Linear { .. } => None,
+        };
+        let extra = lightcraft_merge::DngExtra { masks, private_data };
+        let dng = lightcraft_merge::write_linear_dng_with(&image, &color, orientation, &metadata, baseline, samples, extra).map_err(err)?;
         info["width"] = json!(image.width);
         info["height"] = json!(image.height);
         let preview = match (self.preview, depth.as_ref().filter(|_| self.finish.show_depth)) {
@@ -279,6 +303,21 @@ impl MergeJob {
 }
 
 impl MergeJob {
+    /// The camera look of source `index` when it is a raw without a colour matrix (fitted to its
+    /// own JPEG, as when the photo is opened), as a merged DNG's private data: the merge then
+    /// opens looking like that photo.
+    fn camera_look(&self, index: usize) -> Option<Vec<u8>> {
+        let (_, path) = self.sources.get(index)?;
+        let bytes = (self.read)(path).ok()?;
+        lightcraft_raw::probe(&bytes)?;
+        let mut raw = lightcraft_raw::decode(&bytes).ok()?;
+        // as when the photo is opened: the look's sensor proxy is binned without lens corrections
+        raw.opcodes.list3.retain(|op| !op.is_lens_correction());
+        let t = lightcraft_raw::color::camera_transform(&raw, lightcraft_raw::color::as_shot_white_xy(&raw));
+        let look = crate::camera_preview::fit_preview(&raw, &bytes, &t)?;
+        crate::camera_preview::private_data(&look)
+    }
+
     /// Frames decoded at once (and held while the stacker works on the previous ones): as many as
     /// the memory room for user-started work allows, 1–4.
     fn focus_window(&self, max_edge: Option<usize>) -> usize {

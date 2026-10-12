@@ -112,6 +112,44 @@ pub fn bin_factor(raw: &lightcraft_raw::RawImage, max_edge: usize) -> Option<usi
     [8usize, 6, 4, 3, 2].into_iter().find(|&k| long / k >= need && raw.can_bin(k))
 }
 
+/// The colour tags of a raw frame, complete enough that a merged image (still camera RGB) renders
+/// like the frame itself: the file's own DNG colour tags, plus what a vendor raw (ARW, NEF, RAF…)
+/// keeps elsewhere — the as-shot white balance (vendor multipliers → `AsShotNeutral`) and, when it
+/// has no colour matrix, the generic camera model the decoder falls back on, written as
+/// `ColorMatrix1`/`ForwardMatrix1` for D65 that reproduce the same transform.
+pub fn camera_color(raw: &lightcraft_raw::RawImage) -> ColorData {
+    use lightcraft_color::{D50, D65, REC2020, bradford};
+    use lightcraft_raw::color::{as_shot_white_xy, camera_transform, has_matrix};
+    let mut c = raw.color.clone();
+    let max_one = |n: [f64; 3]| {
+        let mx = n.iter().copied().fold(0.0, f64::max);
+        if mx > 0.0 && mx.is_finite() { n.map(|v| v / mx) } else { [1.0; 3] }
+    };
+    if c.as_shot_neutral.is_none()
+        && c.as_shot_white_xy.is_none()
+        && let Some(m) = raw.wb_multipliers.filter(|m| m.iter().all(|v| *v > 0.0 && v.is_finite()))
+    {
+        c.as_shot_neutral = Some(max_one(m.map(|v| 1.0 / v as f64)));
+    }
+    if has_matrix(&c) {
+        return c;
+    }
+    // `t`: white-balanced camera RGB → linear Rec.2020 (white → white), `t.wb` the as-shot
+    // multipliers. Tags for D65 that give back `t`: ForwardMatrix = XYZ(D50) ← Rec.2020 · t, and a
+    // ColorMatrix (XYZ → camera) that sees D65 white as the as-shot neutral.
+    let t = camera_transform(raw, as_shot_white_xy(raw));
+    let wb = t.wb.map(|v| if v > 0.0 && v.is_finite() { v as f64 } else { 1.0 });
+    let Some(inv) = t.matrix.inverse() else { return c };
+    c.illuminant = [21, 0];
+    c.forward_matrix = [Some(bradford(D65, D50).mul(&REC2020.to_xyz()).mul(&t.matrix)), None];
+    c.color_matrix = [Some(Mat3::diag(1.0 / wb[0], 1.0 / wb[1], 1.0 / wb[2]).mul(&inv).mul(&REC2020.from_xyz())), None];
+    c.camera_calibration = [None, None];
+    c.analog_balance = None;
+    c.as_shot_neutral = Some(max_one(wb.map(|v| 1.0 / v)));
+    c.as_shot_white_xy = None;
+    c
+}
+
 /// Decode a photo (raw or standard format) into a frame no larger than `max_edge` (when given).
 /// Raw frames at most half the sensor size are binned from the mosaic rather than demosaiced.
 /// `orient` applies the EXIF orientation to the pixels.
@@ -147,7 +185,7 @@ pub fn load_frame(bytes: &[u8], max_edge: Option<usize>, orient: bool) -> Result
             clip,
             exposure,
             raw: true,
-            color: FrameColor::Camera(Box::new(raw.color.clone())),
+            color: FrameColor::Camera(Box::new(camera_color(&raw))),
             orientation: raw.orientation,
             metadata: if raw.metadata == Metadata::default() { metadata } else { raw.metadata.clone() },
             baseline_exposure: raw.color.baseline_exposure,

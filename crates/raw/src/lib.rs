@@ -43,6 +43,7 @@ mod unpack;
 mod vendor;
 
 pub use demosaic::{Method, demosaic};
+pub use dng::dng_private_data;
 pub use dngwrite::{DngCompression, DngWriteOptions, write_dng};
 pub use lightcraft_color::Mat3;
 pub use lightcraft_geom::Orientation;

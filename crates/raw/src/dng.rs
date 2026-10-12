@@ -10,6 +10,21 @@ use lightcraft_geom::Orientation;
 use lightcraft_tiff::tags::{self as t, photometric};
 use lightcraft_tiff::{ByteOrder, Ifd, Tiff};
 
+/// The `DNGPrivateData` of a DNG (IFD0) whose leading NUL-terminated name is `name`: the bytes
+/// after the name. `None` for other files, other names, or more than
+/// [`crate::dngwrite::MAX_PRIVATE_DATA`] bytes.
+pub fn dng_private_data(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
+    let tiff = Tiff::parse(bytes).ok()?;
+    let ifd0 = tiff.ifds.first()?;
+    ifd0.bytes(t::DNG_VERSION)?;
+    let p = ifd0.bytes(t::DNG_PRIVATE_DATA)?;
+    if p.len() > crate::dngwrite::MAX_PRIVATE_DATA {
+        return None;
+    }
+    let rest = p.strip_prefix(name.as_bytes())?.strip_prefix(&[0u8])?;
+    Some(rest.to_vec())
+}
+
 /// The main raw IFD: full-resolution (NewSubfileType 0) CFA or LinearRaw image with the most pixels.
 pub(crate) fn raw_ifd(tiff: &Tiff) -> Option<&Ifd> {
     tiff.all_ifds()

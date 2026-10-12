@@ -124,9 +124,15 @@ frames and strokes. Painting happens on the whole picture (no zoom yet).
 photo, ≤ 1024 px), compare `method: "a"|"b"|"c"`, `showDepth: true` to see the depth map, then run it
 without `preview`. `order: "auto"` when the files aren't in focus order.
 
-**DNG output** (`output.rs`): LinearRaw, 3 samples, Deflate tiles; values scaled below 1.0 with the
-scale in `BaselineExposure`; raw sources keep their DNG colour tags (camera RGB), other sources get
-`ColorMatrix1`/`ForwardMatrix1` of their RGB space.
+**DNG output** (`output.rs`): LinearRaw, 3 samples, Deflate tiles. HDR results are scaled below 1.0
+with the scale in `BaselineExposure`; 16-bit results (panoramas, focus stacks) keep the sources' white
+level, so clipped highlights are rebuilt as in the sources. Raw sources keep their DNG colour tags
+(camera RGB); a raw without colour matrices (Sony ARW, Nikon NEF, Fujifilm RAF…) also gets its as-shot
+white balance (`AsShotNeutral`) and the generic camera model LightCraft falls back on
+(`ColorMatrix1`/`ForwardMatrix1`, `frame::camera_color`), and the look LightCraft fits to its camera JPEG
+travels in `DNGPrivateData` (`LightCraft`, JSON: matrix, tone and chroma curve, hue/saturation table),
+so the merge opens looking like its reference photo. Other sources get `ColorMatrix1`/`ForwardMatrix1`
+of their RGB space.
 
 ## Measured (synthetic tests, `cargo test -p lightcraft-merge`)
 

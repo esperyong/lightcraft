@@ -362,8 +362,15 @@ fn load_bytes_now(
         raw.opcodes.list3.retain(|op| !op.is_lens_correction());
         let xy = lightcraft_raw::color::as_shot_white_xy(&raw);
         let t = lightcraft_raw::color::camera_transform(&raw, xy);
-        // the source's segmentation mattes (DNG semantic masks), read while the preview is fitted
-        let (camera_look, mattes) = rayon::join(|| crate::camera_preview::fit_preview(&raw, &bytes, &t), || dng_mattes(&bytes, &raw));
+        // the source's segmentation mattes (DNG semantic masks), read while the preview is fitted;
+        // a DNG merged from a vendor raw brings that raw's look along
+        let (camera_look, mattes) = rayon::join(
+            || {
+                let stored = (raw.format == lightcraft_raw::RawFormat::Dng).then(|| crate::camera_preview::stored_look(&bytes)).flatten();
+                stored.or_else(|| crate::camera_preview::fit_preview(&raw, &bytes, &t))
+            },
+            || dng_mattes(&bytes, &raw),
+        );
         drop(bytes);
         // Previews and thumbnails bin the mosaic straight to (about) the size they need; only
         // larger levels (exports, 1:1) demosaic the whole sensor.

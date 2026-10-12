@@ -28,9 +28,9 @@ pub mod ransac;
 pub mod synth;
 
 pub use focus::{FocusMethod, FocusOptions, FocusOrder, FocusResult, FocusStacker, FrameSource, stack_focus};
-pub use frame::{Frame, FrameColor, load_frame};
+pub use frame::{Frame, FrameColor, camera_color, load_frame};
 pub use hdr::{Deghost, HdrOptions, HdrResult, merge_hdr};
-pub use output::{DngSamples, write_linear_dng, write_linear_dng_with_masks};
+pub use output::{DngExtra, DngSamples, write_linear_dng, write_linear_dng_with};
 pub use pano::{PanoOptions, PanoResult, Projection, stitch};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]

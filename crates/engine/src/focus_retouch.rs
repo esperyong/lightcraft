@@ -349,6 +349,8 @@ impl Sources {
 pub struct Retouch {
     src: Sources,
     base_frame: Frame,
+    /// The stack DNG's private data (the source's camera look), for the previews' DNGs.
+    private_data: Option<Vec<u8>>,
     settings: DevelopSettings,
     edge: usize,
 }
@@ -374,13 +376,15 @@ impl Retouch {
         let mut img = (*self.src.base).clone();
         composite(&mut img, strokes, |s| self.src.get(s))?;
         let f = &self.base_frame;
-        let dng = lightcraft_merge::write_linear_dng(
+        let extra = lightcraft_merge::DngExtra { masks: Vec::new(), private_data: self.private_data.clone() };
+        let dng = lightcraft_merge::write_linear_dng_with(
             &img,
             &f.color,
             lightcraft_geom::Orientation::Normal,
             &f.metadata,
             f.baseline_exposure,
             DngSamples::U16,
+            extra,
         )
         .map_err(|e| e.to_string())?;
         let (src, info) = crate::files::load_bytes(&dng, self.edge)?;
@@ -431,15 +435,19 @@ impl RetouchJob {
         }
         let mut img = base.image.clone();
         composite(&mut img, &self.strokes, |s| src.get(s))?;
-        let masks = lightcraft_raw::semantic_masks(&self.base_bytes);
-        let dng = lightcraft_merge::write_linear_dng_with_masks(
+        // what the stack's DNG carries besides its image: the depth map, the source's camera look
+        let extra = lightcraft_merge::DngExtra {
+            masks: lightcraft_raw::semantic_masks(&self.base_bytes),
+            private_data: crate::camera_preview::private_data_of(&self.base_bytes),
+        };
+        let dng = lightcraft_merge::write_linear_dng_with(
             &img,
             &base.color,
             lightcraft_geom::Orientation::Normal,
             &base.metadata,
             base.baseline_exposure,
             DngSamples::U16,
-            masks,
+            extra,
         )
         .map_err(|e| e.to_string())?;
         progress(1.0, "Done");
@@ -518,6 +526,7 @@ impl RetouchOpen {
                 made: HashMap::new(),
             },
             base_frame: base,
+            private_data: crate::camera_preview::private_data_of(&bytes),
             settings,
             edge,
         })

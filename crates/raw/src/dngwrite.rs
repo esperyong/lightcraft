@@ -84,11 +84,17 @@ pub struct DngWriteOptions {
     /// Semantic masks stored with the image (16-bit, Deflate), e.g. a focus stack's depth map. Each
     /// spans the active area (or its `sub_area`); at most [`MAX_MASK_SAMPLES`] samples.
     pub semantic_masks: Vec<SemanticMask>,
+    /// `DNGPrivateData` (IFD0): an application's own data, starting with its NUL-terminated name
+    /// (DNG spec); read back with [`crate::dng_private_data`]. At most [`MAX_PRIVATE_DATA`] bytes.
+    pub private_data: Option<Vec<u8>>,
 }
+
+/// Largest `DNGPrivateData` written or read.
+pub const MAX_PRIVATE_DATA: usize = 4 << 20;
 
 impl Default for DngWriteOptions {
     fn default() -> Self {
-        Self { compression: DngCompression::Lj92 { tile: 256 }, order: ByteOrder::Little, xmp: None, semantic_masks: Vec::new() }
+        Self { compression: DngCompression::Lj92 { tile: 256 }, order: ByteOrder::Little, xmp: None, semantic_masks: Vec::new(), private_data: None }
     }
 }
 
@@ -182,6 +188,12 @@ pub fn write_dng(raw: &RawImage, opts: &DngWriteOptions) -> Result<Vec<u8>> {
     ifd.set(t::SOFTWARE, Value::Ascii("LightCraft".into()));
     let xmp = opts.xmp.clone().unwrap_or_else(|| lightcraft_meta::write_xmp(&raw.metadata, None));
     ifd.set(t::XMP, Value::Byte(xmp.into_bytes()));
+    if let Some(p) = &opts.private_data {
+        if p.is_empty() || p.len() > MAX_PRIVATE_DATA || !p.contains(&0) {
+            return Err(RawError::Limit("DNG private data (size, or no NUL-terminated name)"));
+        }
+        ifd.set(t::DNG_PRIVATE_DATA, Value::Byte(p.clone()));
+    }
 
     if let Some(cfa) = &raw.cfa {
         ifd.set(t::CFA_REPEAT_PATTERN_DIM, Value::Short(vec![cfa.height as u16, cfa.width as u16]));

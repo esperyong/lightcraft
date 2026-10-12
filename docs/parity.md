@@ -211,7 +211,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-FILT-RATING | Rating filter | P0 | ✅ | `cmd:library.filter` (`rating`, `ratingOp`), `crates/ui-egui/src/panels/filterbar.rs` | ≥ / = / ≤ stars in the filter bar (`cmd:view.filterBar`) |
 | LR-FILT-FLAG | Flag filter | P0 | ✅ | `cmd:library.filter` (`flag`), `crates/ui-egui/src/panels/filterbar.rs` | picked / rejected / unflagged (one at a time) |
 | LR-FILT-LABEL | Colour-label filter | P1 | ✅ | `cmd:library.filter` (`label`), `crates/ui-egui/src/panels/filterbar.rs` | one label at a time; no “no label” choice |
-| LR-FILT-TYPE | Type / edited filter | P1 | ✅ | `cmd:library.filter` (`kind`, `merged`, `edited`), `crates/ui-egui/src/panels/filterbar.rs`, `crates/catalog/src/query.rs` (`merged_kind`) | photos / raw / videos / HDR / panoramas / HDR panoramas (merge results by name), edited / unedited; no depth kind |
+| LR-FILT-TYPE | Type / edited filter | P1 | ✅ | `cmd:library.filter` (`kind`, `merged`, `edited`), `crates/ui-egui/src/panels/filterbar.rs`, `crates/catalog/src/query.rs` (`merged_kind`) | photos / raw / videos / HDR / panoramas / HDR panoramas / focus stacks (merge results by name), edited / unedited; no depth kind |
 | LR-FILT-KEYWORD | Keyword filter | P1 | ✅ | `cmd:library.filter` (`keyword`), `crates/ui-egui/src/panels/filterbar.rs` | keyword picker |
 | LR-FILT-CAMERA | Camera / lens filter | P1 | ✅ | `cmd:library.filter` (`camera`, `lens`), `crates/ui-egui/src/panels/filterbar.rs` | camera and lens pickers |
 | LR-FILT-LOCATION | Location filter | P2 | ✅ | `cmd:library.filter` (`text`, `ruleSet` field `location`) | free text, or a rule on location / city / state / country (smart albums, `library.filter`) |
@@ -409,7 +409,8 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-MERGE-HDR | HDR merge | P2 | ✅ | `cmd:merge.hdr`, `cmd:dialog.mergeHdr` | auto align, deghost None–High + overlay, auto settings, float DNG, Create Stack; JPEG brackets treated as linear |
 | LR-MERGE-PANO | Panorama | P2 | ✅ | `cmd:merge.panorama`, `cmd:dialog.mergePanorama` | spherical/cylindrical/perspective + auto, boundary warp, auto crop, fill edges (diffusion), DNG; no lens model / 360° wrap |
 | LR-MERGE-HDRPANO | HDR panorama | P2 | ✅ | `cmd:merge.hdrPanorama`, `cmd:dialog.mergeHdrPanorama` | brackets grouped by EXIF |
-| LR-MERGE-HEADLESS | Merge with last settings | P2 | ✅ | `cmd:merge.hdrLast`, `cmd:merge.panoramaLast`, `cmd:merge.hdrPanoramaLast` | no dialog; the options of the last merge of that kind (defaults the first time) |
+| LR-MERGE-HEADLESS | Merge with last settings | P2 | ✅ | `cmd:merge.hdrLast`, `cmd:merge.panoramaLast`, `cmd:merge.hdrPanoramaLast`, `cmd:merge.focusStackLast` | no dialog; the options of the last merge of that kind (defaults the first time) |
+| LR-MERGE-FOCUS | Focus stack (beyond Lightroom; Helicon Focus-style) | P2 | ✅ | `cmd:merge.focusStack`, `cmd:dialog.mergeFocusStack`, `crates/merge/src/focus/mod.rs` | methods A (weighted average) / B (depth map) / C (pyramid), Radius, Smoothing; streaming (memory independent of the photo count); chained Lucas–Kanade alignment (shift, rotation, magnification) + brightness; capture / selection / reverse / auto order; every n-th; 16-bit linear DNG `-Focus.dng`; live preview with A/B/C compare and depth view; CLI `merge focus`; CPU only, speed against Helicon unmeasured on a Mac yet (#18) |
 
 ## P. Enhance (ENH)
 
@@ -605,7 +606,7 @@ visible menu bar yet: the menu model is only exposed through the control channel
 | MENU-PHOTO-FLIP | Flip horizontal / vertical | P0 | ✅ | `cmd:photo.flipHorizontal`, `cmd:photo.flipVertical` | |
 | MENU-PHOTO-CREATEVERSION | Create Version… | P1 | ✅ | `cmd:version.create` | no name prompt |
 | MENU-PHOTO-STACK | Stack submenu | P1 | ✅ | `cmd:stack.group`, `cmd:stack.ungroup`, `cmd:dialog.autoStack` | |
-| MENU-PHOTO-MERGE | Photo merge submenu | P2 | ✅ | `cmd:dialog.mergeHdr`, `cmd:dialog.mergePanorama`, `cmd:dialog.mergeHdrPanorama`, `cmd:merge.hdrLast` | |
+| MENU-PHOTO-MERGE | Photo merge submenu | P2 | ✅ | `cmd:dialog.mergeHdr`, `cmd:dialog.mergePanorama`, `cmd:dialog.mergeHdrPanorama`, `cmd:merge.hdrLast`, `cmd:dialog.mergeFocusStack` | plus Focus Stack… (not in Lightroom) |
 | MENU-PHOTO-ENHANCE | Enhance… | P2 | ⬜ | | |
 | MENU-PHOTO-AUTO | Auto settings | P0 | ✅ | `cmd:develop.auto` | |
 | MENU-PHOTO-BW | Convert to B&W | P0 | ✅ | `cmd:develop.treatment` | |
@@ -691,7 +692,7 @@ From `06-shortcuts.md` part 1. Evidence is our binding; conflicts are explained 
 | KEY-BRUSHFEATHER | Brush feather — ⇧`[` / ⇧`]` | P0 | ✅ | `cmd:brush.featherLess`, `cmd:brush.featherMore` | |
 | KEY-BRUSH | Brush — B | P0 | ✅ | `cmd:tool.brush` | |
 | KEY-HEAL | Remove / heal — H | P0 | ✅ | `cmd:panel.remove` | |
-| KEY-MERGE | HDR / panorama merges — ⌃H ⇧⌃H ⌃M ⇧⌃M | P2 | ✅ | `cmd:dialog.mergeHdr`, `cmd:dialog.mergePanorama`, `cmd:merge.hdrLast`, `cmd:merge.panoramaLast` | |
+| KEY-MERGE | HDR / panorama merges — ⌃H ⇧⌃H ⌃M ⇧⌃M | P2 | ✅ | `cmd:dialog.mergeHdr`, `cmd:dialog.mergePanorama`, `cmd:merge.hdrLast`, `cmd:merge.panoramaLast` | plus ⌃⌥F / ⇧⌃⌥F for Focus Stack (⌃F is Find off macOS) |
 | KEY-PICK | Pick — Z | P0 | 🟡 | `cmd:photo.pick` | bound to P; Z toggles zoom |
 | KEY-UNFLAG | Unflag — U | P0 | ✅ | `cmd:photo.unflag` | |
 | KEY-REJECT | Reject — X | P0 | ✅ | `cmd:photo.reject` | swaps crop aspect while cropping |

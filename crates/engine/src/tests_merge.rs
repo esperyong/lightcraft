@@ -92,3 +92,56 @@ fn panorama_command_with_auto_crop() {
     assert!(s.execute("merge.panorama", &json!({"ids": [ids[0]]})).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn focus_stack_command_streams_a_bracket_into_a_dng() {
+    let dir = temp_dir("focus");
+    let n = 6;
+    let mut paths = Vec::new();
+    // file names run against the capture order: the merge must follow the capture times
+    for (i, b) in lightcraft_merge::synth::focus_bracket_dngs(480, 320, n).unwrap().into_iter().enumerate() {
+        let p = dir.join(format!("F_{}.dng", n - 1 - i));
+        std::fs::write(&p, b).unwrap();
+        paths.push(p.to_string_lossy().to_string());
+    }
+    let mut s = Session::new().with_fs();
+    let ids = import(&mut s, paths);
+    assert_eq!(ids.len(), n);
+    // preview of the depth map: a PNG, nothing added
+    let png = dir.join("depth-preview.png");
+    let pv = s.execute("merge.focusStack", &json!({"ids": ids, "preview": true, "showDepth": true, "previewPath": png})).unwrap();
+    assert!(png.exists(), "{pv}");
+    assert_eq!(s.catalog.photos().count(), n);
+    // the full stack, method B, with the depth map written next to it
+    let depth = dir.join("depth.png");
+    let r = s.execute("merge.focusStack", &json!({"ids": ids, "method": "b", "stack": true, "autoSettings": false, "depthPath": depth})).unwrap();
+    assert_eq!(r["method"], "depth");
+    assert_eq!(r["used"], n);
+    assert_eq!(r["order"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect::<Vec<_>>(), ids, "capture order");
+    assert!(r["warnings"].as_array().unwrap().is_empty(), "{r}");
+    assert!(r["alignment"]["minNcc"].as_f64().unwrap() > 0.9, "{r}");
+    let path = r["path"].as_str().unwrap();
+    assert!(path.ends_with("F_5-Focus.dng"), "{path}");
+    let id = lightcraft_catalog::PhotoId(r["id"].as_u64().unwrap());
+    let p = s.catalog.photo(id).unwrap().clone();
+    assert!(p.width > 440 && p.height > 290 && p.width <= 480, "{}×{}", p.width, p.height);
+    assert_eq!(s.catalog.stack_of(id).map(|st| st.top()), Some(id));
+    let d = lightcraft_codecs::decode(&std::fs::read(&depth).unwrap(), Default::default()).unwrap();
+    assert_eq!((d.image.width, d.image.height), (p.width as usize, p.height as usize));
+    // every other photo, the pyramid method, size limit
+    let r2 =
+        s.execute("merge.focusStack", &json!({"ids": ids, "method": "pyramid", "every": 2, "maxMegapixels": 0.05, "autoSettings": false})).unwrap();
+    assert_eq!(r2["used"], 4);
+    assert!(r2["path"].as_str().unwrap().ends_with("F_5-Focus-2.dng"));
+    let id2 = lightcraft_catalog::PhotoId(r2["id"].as_u64().unwrap());
+    let p2 = s.catalog.photo(id2).unwrap();
+    assert!((p2.width * p2.height) as f64 <= 0.05e6, "{}×{}", p2.width, p2.height);
+    // the type filter
+    s.execute("library.filter", &json!({"merged": "focus"})).unwrap();
+    let found: std::collections::HashSet<_> = s.catalog.query(&s.filter, &Default::default()).into_iter().collect();
+    assert_eq!(found, [id, id2].into_iter().collect());
+    // bad parameters are errors, not panics
+    assert!(s.execute("merge.focusStack", &json!({"ids": ids, "method": "x"})).is_err());
+    assert!(s.execute("merge.focusStack", &json!({"ids": [ids[0]]})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -2,6 +2,14 @@
 
 ## October 2026
 
+### Focus stacking
+- Photo ▸ Photo Merge ▸ Focus Stack… (⌃⌥F) combines a focus bracket into one photo sharp from front to back, with
+  three methods: A (weighted average), B (depth map, the default) and C (pyramid), Radius and Smoothing.
+- The preview compares A, B and C side by side and shows the depth map; frames are aligned (shift, rotation,
+  focus breathing) and evened out in brightness, and photos that don't belong to the bracket are left out.
+- Memory stays flat however many photos the bracket has: frames stream through the stacker one at a time. The result
+  is a linear DNG (`-Focus.dng`) you edit like any raw. Also `merge.focusStack` and `lightcraft-cli merge focus`.
+
 ### Apple's raw decoder on the Mac
 - On macOS 12+, raws LightCraft can't decode yet (compressed Olympus ORF, Nikon High Efficiency NEF…) develop with
   Apple's raw decoder instead of opening from their embedded JPEG. Settings ▸ Performance ▸ Raw decoder chooses

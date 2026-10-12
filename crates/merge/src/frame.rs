@@ -103,7 +103,17 @@ pub fn detect_clip(img: &Rgb32f) -> f32 {
     if maxv >= 1.0 || piled { level * 0.995 } else { 1.0 }
 }
 
+/// The largest mosaic binning factor that still leaves at least ~90 % of `max_edge` on the long
+/// side (`None` when the raw can't be binned or is too small for it).
+pub fn bin_factor(raw: &lightcraft_raw::RawImage, max_edge: usize) -> Option<usize> {
+    let c = raw.crop.clipped(raw.active_area.width, raw.active_area.height);
+    let long = if c.width > 1 && c.height > 1 { c.width.max(c.height) } else { raw.active_area.width.max(raw.active_area.height) };
+    let need = (max_edge.saturating_mul(9) / 10).max(1);
+    [8usize, 6, 4, 3, 2].into_iter().find(|&k| long / k >= need && raw.can_bin(k))
+}
+
 /// Decode a photo (raw or standard format) into a frame no larger than `max_edge` (when given).
+/// Raw frames at most half the sensor size are binned from the mosaic rather than demosaiced.
 /// `orient` applies the EXIF orientation to the pixels.
 pub fn load_frame(bytes: &[u8], max_edge: Option<usize>, orient: bool) -> Result<Frame> {
     let metadata = lightcraft_meta::extract(bytes);
@@ -112,9 +122,17 @@ pub fn load_frame(bytes: &[u8], max_edge: Option<usize>, orient: bool) -> Result
         let mut raw = lightcraft_raw::decode(bytes).map_err(|e| MergeError::Decode(e.to_string()))?;
         // geometric lens corrections stay with the develop settings ("profile corrections")
         raw.opcodes.list3.retain(|op| !op.is_lens_correction());
+        // a frame well below the sensor size bins the mosaic (no demosaicing: several times faster)
+        let binned = match max_edge.and_then(|m| bin_factor(&raw, m)) {
+            Some(k) => raw.develop_binned(k, 0.99).map_err(|e| MergeError::Decode(e.to_string()))?,
+            None => None,
+        };
         let small = max_edge.is_some_and(|m| m <= 1200);
         let method = if small { lightcraft_raw::Method::Bilinear } else { lightcraft_raw::Method::Ahd };
-        let mut image = raw.develop(method).map_err(|e| MergeError::Decode(e.to_string()))?;
+        let mut image = match binned {
+            Some(img) => img,
+            None => raw.develop(method).map_err(|e| MergeError::Decode(e.to_string()))?,
+        };
         for p in image.data.iter_mut() {
             *p = p.map(|v| v.max(0.0));
         }
@@ -181,6 +199,59 @@ mod tests {
         let m2 = Metadata { exposure_time: Some(4.0 / 125.0), ..m.clone() };
         assert!((exif_exposure(&m2).unwrap() - e - 2.0).abs() < 1e-9);
         assert!(exif_exposure(&Metadata::default()).is_none());
+    }
+
+    /// A Bayer DNG of a smooth colour gradient.
+    fn bayer_dng(w: usize, h: usize) -> Vec<u8> {
+        use lightcraft_raw::*;
+        let data: Vec<u16> = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                let c = (x % 2) + (y % 2); // R = 0, G = 1, B = 2 (RGGB)
+                (512 + x * 20 + y * 10 + c * 1500) as u16
+            })
+            .collect();
+        let raw = RawImage {
+            format: RawFormat::Dng,
+            width: w,
+            height: h,
+            cpp: 1,
+            data: RawData::U16(data),
+            cfa: Cfa::bayer("RGGB"),
+            bits: 14,
+            black: BlackLevel::uniform(256.0),
+            white: vec![16000.0],
+            active_area: Rect::new(0, 0, w, h),
+            crop: Rect::new(0, 0, w, h),
+            orientation: Orientation::Normal,
+            color: ColorData {
+                illuminant: [21, 0],
+                color_matrix: [Some(lightcraft_color::Mat3([[0.9, 0.2, -0.15], [-0.3, 1.25, 0.08], [0.02, -0.12, 0.85]])), None],
+                as_shot_neutral: Some([0.5, 1.0, 0.7]),
+                ..Default::default()
+            },
+            wb_multipliers: None,
+            linearized: false,
+            opcodes: OpcodeLists::default(),
+            metadata: Metadata::default(),
+        };
+        write_dng(&raw, &DngWriteOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn small_raw_frames_are_binned_like_demosaiced_ones() {
+        let dng = bayer_dng(400, 300);
+        let small = load_frame(&dng, Some(100), true).unwrap();
+        assert_eq!((small.width(), small.height()), (100, 75));
+        let full = load_frame(&dng, None, true).unwrap();
+        assert_eq!((full.width(), full.height()), (400, 300));
+        let fitted = fit(&full.image, 100, 100, Filter::Box);
+        for (x, y) in [(10, 10), (50, 37), (90, 70)] {
+            let (a, b) = (small.image.get(x, y), fitted.get(x, y));
+            for c in 0..3 {
+                assert!((a[c] - b[c]).abs() < 0.01 + 0.02 * b[c], "({x}, {y}) {a:?} vs {b:?}");
+            }
+        }
     }
 
     #[test]

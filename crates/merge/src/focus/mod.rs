@@ -578,7 +578,10 @@ impl FocusStacker {
             }
             Stage::Fuse => (Pass::Fuse, self.fuse_seq.iter().map(|&p| self.seq[p]).collect(), self.opts.max_edge),
             Stage::Gather => {
-                let half = self.geometry.as_ref().map(|g| g.size.0.max(g.size.1).div_ceil(2)).filter(|&e| e >= MIN_GATHER_EDGE);
+                // TEMPORARY (#18, M5 round 3, to be removed before merging): `LIGHTCRAFT_FOCUS_GATHER=full`
+                // gathers from full-size frames, to compare with the half-size default on real brackets
+                let full = std::env::var("LIGHTCRAFT_FOCUS_GATHER").is_ok_and(|v| v == "full");
+                let half = self.geometry.as_ref().map(|g| g.size.0.max(g.size.1).div_ceil(2)).filter(|&e| e >= MIN_GATHER_EDGE && !full);
                 (Pass::Gather, self.gather.iter().map(|&p| self.seq[self.fuse_seq[p]]).collect(), half.or(self.opts.max_edge))
             }
             Stage::Done => return Ok(None),

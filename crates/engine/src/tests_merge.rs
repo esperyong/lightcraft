@@ -128,6 +128,14 @@ fn focus_stack_command_streams_a_bracket_into_a_dng() {
     assert_eq!(s.catalog.stack_of(id).map(|st| st.top()), Some(id));
     let d = lightcraft_codecs::decode(&std::fs::read(&depth).unwrap(), Default::default()).unwrap();
     assert_eq!((d.image.width, d.image.height), (p.width as usize, p.height as usize));
+    // the depth map travels in the DNG: the source has a depth matte, and a Depth Range mask
+    // selects on it
+    let masks = lightcraft_raw::semantic_masks(&std::fs::read(path).unwrap());
+    assert_eq!(masks.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), [lightcraft_merge::focus::DEPTH_MASK_NAME]);
+    s.render_now(id, 256, 256).unwrap();
+    assert!(s.source_info(id).mattes.is_some_and(|m| m.has(lightcraft_pipeline::masks::MatteKind::Depth)));
+    s.selection = crate::Selection::single(id);
+    s.execute("mask.add", &json!({"kind": "depthRange", "lo": 0.0, "hi": 0.5})).unwrap();
     // every other photo, the pyramid method, size limit
     let r2 =
         s.execute("merge.focusStack", &json!({"ids": ids, "method": "pyramid", "every": 2, "maxMegapixels": 0.05, "autoSettings": false})).unwrap();

@@ -8,12 +8,13 @@
 //!   still camera RGB.
 //! - Other sources: the "camera" is the file's linear RGB space; `ColorMatrix1` = XYZ(D65) → RGB,
 //!   `ForwardMatrix1` = RGB → XYZ(D50), `AsShotNeutral` = (1, 1, 1).
+//! - Semantic masks (a focus stack's depth map) go in SubIFDs of the image (DNG 1.6).
 
 use lightcraft_color::{D50, D65, Mat3, bradford};
 use lightcraft_geom::Orientation;
 use lightcraft_meta::Metadata;
 use lightcraft_raster::Rgb32f;
-use lightcraft_raw::{BlackLevel, ColorData, DngCompression, DngWriteOptions, OpcodeLists, RawData, RawFormat, RawImage, Rect};
+use lightcraft_raw::{BlackLevel, ColorData, DngCompression, DngWriteOptions, OpcodeLists, RawData, RawFormat, RawImage, Rect, SemanticMask};
 
 use crate::frame::FrameColor;
 use crate::{MergeError, Result};
@@ -67,6 +68,20 @@ pub fn write_linear_dng(
     baseline_exposure: f64,
     samples: DngSamples,
 ) -> Result<Vec<u8>> {
+    write_linear_dng_with_masks(img, color, orientation, metadata, baseline_exposure, samples, Vec::new())
+}
+
+/// [`write_linear_dng`] with semantic masks stored alongside (a focus stack's depth map); each
+/// spans the whole image.
+pub fn write_linear_dng_with_masks(
+    img: &Rgb32f,
+    color: &FrameColor,
+    orientation: Orientation,
+    metadata: &Metadata,
+    baseline_exposure: f64,
+    samples: DngSamples,
+    masks: Vec<SemanticMask>,
+) -> Result<Vec<u8>> {
     let (w, h) = (img.width, img.height);
     if w == 0 || h == 0 {
         return Err(MergeError::Output("empty image".into()));
@@ -110,7 +125,8 @@ pub fn write_linear_dng(
         metadata: meta,
     };
     let compression = DngCompression::Deflate { tile: 256, half: samples == DngSamples::Half };
-    lightcraft_raw::write_dng(&raw, &DngWriteOptions { compression, ..Default::default() }).map_err(|e| MergeError::Output(e.to_string()))
+    lightcraft_raw::write_dng(&raw, &DngWriteOptions { compression, semantic_masks: masks, ..Default::default() })
+        .map_err(|e| MergeError::Output(e.to_string()))
 }
 
 #[cfg(test)]

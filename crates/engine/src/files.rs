@@ -490,7 +490,7 @@ fn dng_mattes(bytes: &[u8], raw: &lightcraft_raw::RawImage) -> Option<Arc<lightc
     for m in lightcraft_raw::semantic_masks(bytes) {
         let Some(kind) = matte_kind(&m.name) else { continue };
         let Some(img) = m.developed(raw.active_area, raw.crop) else { continue };
-        if kind != MatteKind::Sky && !img.data.iter().any(|&v| v >= 128) {
+        if !matches!(kind, MatteKind::Sky | MatteKind::Depth) && !img.data.iter().any(|&v| v >= 128) {
             continue;
         }
         mattes.push(kind, img.into_oriented(raw.orientation));
@@ -499,9 +499,13 @@ fn dng_mattes(bytes: &[u8], raw: &lightcraft_raw::RawImage) -> Option<Arc<lightc
 }
 
 /// What a semantic mask selects, by its `SemanticName`: Apple's (iPhone ProRAW) are named after
-/// their auxiliary image types, `urn:com:apple:photo:<year>:aux:<type>`. Other names: `None`.
+/// their auxiliary image types, `urn:com:apple:photo:<year>:aux:<type>`; a focus stack's depth map
+/// is [`lightcraft_merge::focus::DEPTH_MASK_NAME`]. Other names: `None`.
 fn matte_kind(name: &str) -> Option<lightcraft_pipeline::masks::MatteKind> {
     use lightcraft_pipeline::masks::MatteKind::*;
+    if name == lightcraft_merge::focus::DEPTH_MASK_NAME {
+        return Some(Depth);
+    }
     let kind = name.strip_prefix("urn:com:apple:photo:")?.rsplit(':').next()?;
     Some(match kind {
         "semanticskymatte" => Sky,

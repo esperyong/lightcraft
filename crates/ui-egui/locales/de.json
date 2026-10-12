@@ -1915,5 +1915,9 @@
   "Merge Every n-th Photo Too": "Auch beim Zusammenfügen jedes n-te Foto",
   "Depth Map": "Tiefenkarte",
   "Focus Stacks": "Fokus-Stacks",
-  "Focus stacks": "Fokus-Stacks"
+  "Focus stacks": "Fokus-Stacks",
+  "Depth": "Tiefe",
+  "Embed Depth Map": "Tiefenkarte einbetten",
+  "Select Depth Range (near → far)": "Tiefenbereich wählen (nah → fern)",
+  "This photo has no depth map (focus stacks have one).": "Dieses Foto hat keine Tiefenkarte (Fokus-Stacks haben eine)."
 }

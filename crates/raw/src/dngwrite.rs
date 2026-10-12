@@ -1,6 +1,8 @@
 //! Writing DNG files from a [`RawImage`] (uncompressed or lossless-JPEG tiles), used for DNG export and for
-//! bit-exact decoder round-trip tests. The raw image is stored in IFD0 (allowed by DNG 1.7 §"File Structure").
+//! bit-exact decoder round-trip tests. The raw image is stored in IFD0 (allowed by DNG 1.7 §"File Structure");
+//! semantic masks ([`DngWriteOptions::semantic_masks`], DNG 1.6) go in its SubIFDs.
 
+use crate::semantic::{MAX_MASK_SAMPLES, SemanticMask};
 use crate::{RawData, RawError, RawImage, Result, ljpeg, opcodes};
 use lightcraft_color::Mat3;
 use lightcraft_tiff::tags::{self as t, compression, photometric};
@@ -79,12 +81,70 @@ pub struct DngWriteOptions {
     pub order: ByteOrder,
     /// XMP packet to embed (tag 700); defaults to one generated from the image metadata.
     pub xmp: Option<String>,
+    /// Semantic masks stored with the image (16-bit, Deflate), e.g. a focus stack's depth map. Each
+    /// spans the active area (or its `sub_area`); at most [`MAX_MASK_SAMPLES`] samples.
+    pub semantic_masks: Vec<SemanticMask>,
 }
 
 impl Default for DngWriteOptions {
     fn default() -> Self {
-        Self { compression: DngCompression::Lj92 { tile: 256 }, order: ByteOrder::Little, xmp: None }
+        Self { compression: DngCompression::Lj92 { tile: 256 }, order: ByteOrder::Little, xmp: None, semantic_masks: Vec::new() }
     }
+}
+
+/// `w × h` samples of `cpp` channels as Deflate tiles with horizontal differencing (TIFF predictor 2).
+fn deflate_u16_tiles(v: &[u16], w: usize, h: usize, cpp: usize, tile: usize, order: ByteOrder) -> Vec<Vec<u8>> {
+    let (ta, td) = (w.div_ceil(tile), h.div_ceil(tile));
+    (0..ta * td)
+        .into_par_iter()
+        .map(|i| {
+            let (tx, ty) = (i % ta * tile, i / ta * tile);
+            let mut buf = Vec::with_capacity(tile * tile * cpp * 2);
+            let mut row = vec![0u16; tile * cpp];
+            for y in 0..tile {
+                let sy = (ty + y).min(h - 1);
+                for x in 0..tile {
+                    let sx = (tx + x).min(w - 1);
+                    for s in 0..cpp {
+                        row[x * cpp + s] = v[(sy * w + sx) * cpp + s];
+                    }
+                }
+                for i in (cpp..row.len()).rev() {
+                    row[i] = row[i].wrapping_sub(row[i - cpp]);
+                }
+                row.iter().for_each(|&x| order.put_u16(&mut buf, x));
+            }
+            miniz_oxide::deflate::compress_to_vec_zlib(&buf, 6)
+        })
+        .collect()
+}
+
+/// The IFD of one semantic mask (DNG 1.6: NewSubFileType 10004.H, PhotometricInterpretation 52527).
+fn mask_ifd(m: &SemanticMask, order: ByteOrder) -> Result<IfdBuilder> {
+    let (w, h) = (m.width, m.height);
+    if w == 0 || h == 0 || w.checked_mul(h).is_none_or(|n| n > MAX_MASK_SAMPLES || n != m.data.len()) || m.name.is_empty() {
+        return Err(RawError::Limit("semantic mask size or name"));
+    }
+    let mut ifd = IfdBuilder::new();
+    ifd.set(t::NEW_SUBFILE_TYPE, Value::Long(vec![t::SUBFILE_SEMANTIC_MASK]));
+    ifd.set(t::IMAGE_WIDTH, Value::Long(vec![w as u32]));
+    ifd.set(t::IMAGE_LENGTH, Value::Long(vec![h as u32]));
+    ifd.set(t::SAMPLES_PER_PIXEL, Value::Short(vec![1]));
+    ifd.set(t::BITS_PER_SAMPLE, Value::Short(vec![16]));
+    ifd.set(t::PLANAR_CONFIGURATION, Value::Short(vec![1]));
+    ifd.set(t::PHOTOMETRIC, Value::Short(vec![photometric::MASK]));
+    ifd.set(t::SEMANTIC_NAME, Value::Ascii(m.name.clone()));
+    if let Some(id) = m.instance_id.as_ref().filter(|s| !s.is_empty()) {
+        ifd.set(t::SEMANTIC_INSTANCE_ID, Value::Ascii(id.clone()));
+    }
+    if let Some(a) = m.sub_area {
+        ifd.set(t::MASK_SUB_AREA, Value::Long(vec![a.top, a.left, a.full_width, a.full_height]));
+    }
+    ifd.set(t::COMPRESSION, Value::Short(vec![compression::ADOBE_DEFLATE]));
+    ifd.set(t::PREDICTOR, Value::Short(vec![2]));
+    let tile = 256usize;
+    ifd.set_image(ImageData::Tiles { tile_width: tile as u32, tile_height: tile as u32, tiles: deflate_u16_tiles(&m.data, w, h, 1, tile, order) });
+    Ok(ifd)
 }
 
 fn srat_mat(m: &Mat3) -> Value {
@@ -302,29 +362,7 @@ pub fn write_dng(raw: &RawImage, opts: &DngWriteOptions) -> Result<Vec<u8>> {
                     ifd.set(t::BITS_PER_SAMPLE, Value::Short(vec![16; cpp]));
                     ifd.set(t::COMPRESSION, Value::Short(vec![compression::ADOBE_DEFLATE]));
                     ifd.set(t::PREDICTOR, Value::Short(vec![2]));
-                    let (ta, td) = (w.div_ceil(tile), h.div_ceil(tile));
-                    let tiles: Vec<Vec<u8>> = (0..ta * td)
-                        .into_par_iter()
-                        .map(|i| {
-                            let (tx, ty) = (i % ta * tile, i / ta * tile);
-                            let mut buf = Vec::with_capacity(tile * tile * cpp * 2);
-                            let mut row = vec![0u16; tile * cpp];
-                            for y in 0..tile {
-                                let sy = (ty + y).min(h - 1);
-                                for x in 0..tile {
-                                    let sx = (tx + x).min(w - 1);
-                                    for s in 0..cpp {
-                                        row[x * cpp + s] = v[(sy * w + sx) * cpp + s];
-                                    }
-                                }
-                                for i in (cpp..row.len()).rev() {
-                                    row[i] = row[i].wrapping_sub(row[i - cpp]);
-                                }
-                                row.iter().for_each(|&x| opts.order.put_u16(&mut buf, x));
-                            }
-                            miniz_oxide::deflate::compress_to_vec_zlib(&buf, 6)
-                        })
-                        .collect();
+                    let tiles = deflate_u16_tiles(v, w, h, cpp, tile, opts.order);
                     ifd.set_image(ImageData::Tiles { tile_width: tile as u32, tile_height: tile as u32, tiles });
                 }
                 DngCompression::Lj92 { tile } => {
@@ -359,6 +397,9 @@ pub fn write_dng(raw: &RawImage, opts: &DngWriteOptions) -> Result<Vec<u8>> {
                 }
             }
         }
+    }
+    for m in &opts.semantic_masks {
+        ifd.add_sub_ifd(mask_ifd(m, opts.order)?);
     }
     Ok(TiffWriter::new(opts.order, false).write(&[ifd])?)
 }

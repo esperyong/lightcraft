@@ -74,7 +74,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Focus Stack",
             [],
             None,
-            "{ids?, method=depth|average|pyramid (a|b|c; depth), radius=1..30 (8), smoothing=0..10 (4), align=true, alignShift, alignRotation, alignScale, alignBrightness (default: align), order=capture|selection|reverse|auto, every=1 (every n-th photo, first and last always; previews ~12 photos), reference=middle|first|sharpest, crop=common|reference, maxMegapixels=0 (no limit), depthPath? (16-bit PNG), autoSettings=true, stack=false, preview=false, showDepth=false, previewPath?}",
+            "{ids?, method=depth|average|pyramid (a|b|c; depth), radius=1..30 (8), smoothing=0..10 (4), align=true, alignShift, alignRotation, alignScale, alignBrightness (default: align), order=capture|selection|reverse|auto, every=1 (every n-th photo, first and last always; previews ~12 photos), reference=middle|first|sharpest, crop=common|reference, maxMegapixels=0 (no limit), depthMap=true (embed the depth map in the DNG for Depth Range masks), depthPath? (also as a 16-bit PNG), autoSettings=true, stack=false, preview=false, showDepth=false, previewPath?}",
             can_merge,
             |s, p| run(s, "merge.focusStack", p)
         ),

@@ -357,7 +357,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-MASK-RADIAL | Radial gradient | P0 | ✅ | `cmd:tool.radial`, `cmd:mask.update`, `crates/ui-egui/src/panels/detail.rs` | drag the selected ellipse's body or centre pin to move; edge grips resize, outer grip rotates; rotated and compound radial components, hidden pins, outside hit rejection and one-step undo tested |
 | LR-MASK-COLORRANGE | Colour range | P1 | ✅ | `cmd:mask.add` (`colorRange`), `cmd:mask.sampleColor`, `cmd:mask.update`, `crates/pipeline/src/lib.rs` (`color_range_sample`) | Color tile → click the photo to sample (⇧-click adds, up to 5; samples taken in the space the mask compares in), Pick button, Refine slider |
 | LR-MASK-LUMRANGE | Luminance range | P1 | ✅ | `cmd:mask.add` (`luminanceRange`), `cmd:mask.update`, `crates/ui-egui/src/panels/masking.rs` (`range_controls`) | range bar with two handles (one undo step per drag), Smoothness, Show Luminance Map (B&W photo with the range tinted) |
-| LR-MASK-DEPTHRANGE | Depth range | P2 | ⬜ | | shape exists, needs depth data |
+| LR-MASK-DEPTHRANGE | Depth range | P2 | 🟡 | `cmd:mask.add` (`depthRange`), `crates/pipeline/src/masks.rs` | selects on a photo's depth map: focus stacks embed theirs in the DNG (semantic mask); no depth for other photos (no depth estimation, no iPhone depth) |
 | LR-MASK-COMBINE | Add / subtract / intersect | P0 | ✅ | `cmd:mask.addComponent` | |
 | LR-MASK-INVERT | Invert | P0 | ✅ | `cmd:mask.invert` | |
 | LR-MASK-AMOUNT | Mask amount | P1 | ✅ | `cmd:mask.adjust` (`amount`), `crates/ui-egui/src/panels/masking.rs` | |
@@ -411,6 +411,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-MERGE-HDRPANO | HDR panorama | P2 | ✅ | `cmd:merge.hdrPanorama`, `cmd:dialog.mergeHdrPanorama` | brackets grouped by EXIF |
 | LR-MERGE-HEADLESS | Merge with last settings | P2 | ✅ | `cmd:merge.hdrLast`, `cmd:merge.panoramaLast`, `cmd:merge.hdrPanoramaLast`, `cmd:merge.focusStackLast` | no dialog; the options of the last merge of that kind (defaults the first time) |
 | LR-MERGE-FOCUS | Focus stack (beyond Lightroom; Helicon Focus-style) | P2 | ✅ | `cmd:merge.focusStack`, `cmd:dialog.mergeFocusStack`, `crates/merge/src/focus/mod.rs` | methods A (weighted average) / B (depth map) / C (pyramid), Radius, Smoothing; streaming (memory independent of the photo count); chained Lucas–Kanade alignment (shift, rotation, magnification) + brightness; capture / selection / reverse / auto order; every n-th; 16-bit linear DNG `-Focus.dng`; live preview with A/B/C compare and depth view; CLI `merge focus`; CPU only, speed against Helicon unmeasured on a Mac yet (#18) |
+| LR-MERGE-FOCUS-DEPTH | Focus stack depth map | P2 | ✅ | `cmd:merge.focusStack` (`depthMap`, `depthPath`, `showDepth`), `crates/merge/src/focus/depth.rs` | in the DNG as a semantic mask (≤ 4096 px, 16-bit) that Depth Range masks select on; 16-bit PNG on request; depth view in the dialog; A: weighted mean frame, B: smoothed sub-frame depth, C: level-0 winners |
 
 ## P. Enhance (ENH)
 

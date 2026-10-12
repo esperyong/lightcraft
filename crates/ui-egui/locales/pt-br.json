@@ -1760,5 +1760,9 @@
   "Merge Every n-th Photo Too": "Mesclar também a cada n fotos",
   "Depth Map": "Mapa de profundidade",
   "Focus Stacks": "Empilhamentos de foco",
-  "Focus stacks": "Empilhamentos de foco"
+  "Focus stacks": "Empilhamentos de foco",
+  "Depth": "Profundidade",
+  "Embed Depth Map": "Incorporar mapa de profundidade",
+  "Select Depth Range (near → far)": "Selecionar faixa de profundidade (perto → longe)",
+  "This photo has no depth map (focus stacks have one).": "Esta foto não tem mapa de profundidade (empilhamentos de foco têm)."
 }

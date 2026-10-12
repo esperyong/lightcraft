@@ -11,7 +11,8 @@
 //!
 //! A focus stack streams its frames through [`lightcraft_merge::FocusStacker`] pass by pass
 //! (decoding the next few while the stacker works on the current ones), so memory stays flat
-//! however many photos the bracket has.
+//! however many photos the bracket has. Its depth map travels in the DNG as a semantic mask, which
+//! Depth Range masks select on.
 
 use std::sync::Arc;
 
@@ -45,11 +46,19 @@ pub enum MergeKind {
         bracket: usize,
     },
     /// Focus stack. `focus.every` 0 = automatic (every photo for the merge, about 12 photos for a
-    /// preview); `max_megapixels` > 0 limits the result's size.
+    /// preview); `max_megapixels` > 0 limits the result's size; `depth_map` stores the depth map
+    /// in the DNG (a semantic mask Depth Range masks select on).
     FocusStack {
         focus: FocusOptions,
+        #[serde(default)]
         max_megapixels: f64,
+        #[serde(default = "yes")]
+        depth_map: bool,
     },
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl MergeKind {
@@ -244,7 +253,11 @@ impl MergeJob {
             metadata.caption = Some(merged_caption(&names));
         }
         metadata.software = Some("LightCraft Photo Merge".into());
-        let dng = lightcraft_merge::write_linear_dng(&image, &color, orientation, &metadata, baseline, samples).map_err(err)?;
+        let masks: Vec<_> = match (&self.kind, &depth) {
+            (MergeKind::FocusStack { depth_map: true, .. }, Some(d)) => lightcraft_merge::focus::depth_mask(d).into_iter().collect(),
+            _ => Vec::new(),
+        };
+        let dng = lightcraft_merge::write_linear_dng_with_masks(&image, &color, orientation, &metadata, baseline, samples, masks).map_err(err)?;
         info["width"] = json!(image.width);
         info["height"] = json!(image.height);
         let preview = match (self.preview, depth.as_ref().filter(|_| self.finish.show_depth)) {
@@ -504,6 +517,7 @@ pub fn parse(id: &str, p: &Value) -> Result<(MergeKind, MergeFinish)> {
         "merge.focusStack" => MergeKind::FocusStack {
             focus: parse_focus(p).map_err(bad)?,
             max_megapixels: p.get("maxMegapixels").and_then(Value::as_f64).unwrap_or(0.0).max(0.0),
+            depth_map: p.get("depthMap").and_then(Value::as_bool).unwrap_or(true),
         },
         _ => MergeKind::HdrPanorama { hdr, pano, bracket: p.get("bracket").and_then(Value::as_u64).unwrap_or(0) as usize },
     };
@@ -585,7 +599,7 @@ impl Session {
             .unwrap_or((0, 0));
         let edge = preview.then_some(PREVIEW_EDGE);
         let mut kind = kind;
-        if let MergeKind::FocusStack { focus, max_megapixels } = &mut kind {
+        if let MergeKind::FocusStack { focus, max_megapixels, .. } = &mut kind {
             // capture order: by capture time, then file name (brackets are numbered in order)
             if focus.order != FocusOrder::Selection {
                 let key = |id: PhotoId| self.catalog.photo(id).map(|p| (p.captured.clone().unwrap_or_default(), p.file_name.clone()));

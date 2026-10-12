@@ -56,6 +56,8 @@ pub struct MergeDialog {
     pub every_final: bool,
     /// Show the depth map instead of the stacked preview (no new run).
     pub show_depth: bool,
+    /// Store the depth map in the DNG (Depth Range masks select on it).
+    pub depth_map: bool,
 }
 
 impl Default for MergeDialog {
@@ -83,6 +85,7 @@ impl Default for MergeDialog {
             every: 0,
             every_final: false,
             show_depth: false,
+            depth_map: true,
         }
     }
 }
@@ -126,7 +129,7 @@ impl MergeDialog {
     }
     /// The options a preview depends on (what is shown of it aside).
     pub fn preview_key(&self) -> MergeDialog {
-        MergeDialog { show_depth: false, every_final: false, ..self.clone() }
+        MergeDialog { show_depth: false, every_final: false, depth_map: true, ..self.clone() }
     }
     /// Only slider values differ from `other` (the preview waits for the drag to pause).
     fn slider_change(&self, other: &MergeDialog) -> bool {
@@ -601,6 +604,7 @@ fn focus_options(ui: &mut egui::Ui, opts: &mut MergeDialog) {
         ui.label(egui::RichText::new(crate::i18n::tr("0 = about 12 photos")).color(t.text_dim).size(11.0));
     }
     ui.add_enabled_ui(opts.every > 1, |ui| check(ui, "mergeEveryFinal", &mut opts.every_final, "Merge Every n-th Photo Too"));
+    check(ui, "mergeDepthMap", &mut opts.depth_map, "Embed Depth Map");
     ui.add_space(4.0);
 }
 

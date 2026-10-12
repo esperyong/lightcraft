@@ -1772,5 +1772,9 @@
   "Merge Every n-th Photo Too": "合成も n 枚ごとに行う",
   "Depth Map": "深度マップ",
   "Focus Stacks": "深度合成",
-  "Focus stacks": "深度合成"
+  "Focus stacks": "深度合成",
+  "Depth": "深度",
+  "Embed Depth Map": "深度マップを埋め込む",
+  "Select Depth Range (near → far)": "深度範囲を選択（近 → 遠）",
+  "This photo has no depth map (focus stacks have one).": "この写真には深度マップがありません（深度合成の結果にはあります）。"
 }

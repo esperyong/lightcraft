@@ -1777,5 +1777,9 @@
   "Merge Every n-th Photo Too": "合成時同樣每隔 n 張取 1 張",
   "Depth Map": "深度圖",
   "Focus Stacks": "景深合成",
-  "Focus stacks": "景深合成"
+  "Focus stacks": "景深合成",
+  "Depth": "深度",
+  "Embed Depth Map": "嵌入深度圖",
+  "Select Depth Range (near → far)": "選擇深度範圍（近 → 遠）",
+  "This photo has no depth map (focus stacks have one).": "這張照片沒有深度圖（景深合成的結果才有）。"
 }

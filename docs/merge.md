@@ -92,8 +92,11 @@ frames (as memory allows) while the stacker works on the current ones.
 4. *Gather* (method B, only when needed).
 
 **Output:** a 16-bit linear DNG `<first photo in focus order>-Focus.dng` with the reference frame's colour
-tags (raw sources stay camera RGB, so white balance and the rest stay editable); optionally the depth
-map as a 16-bit grey PNG (`depthPath`; near = black). `info` reports the method, focus order, used and
+tags (raw sources stay camera RGB, so white balance and the rest stay editable). The depth map goes
+into the DNG as a DNG 1.6 semantic mask (`urn:app:lightcraft:focus:depth`, 16-bit, ≤ 4096 px; 0 = the
+first photo of the focus order) unless `depthMap: false`: Masking ▸ Depth (a Depth Range mask) selects
+on it, e.g. to darken or blur what lies behind the subject. Optionally also as a 16-bit grey PNG
+(`depthPath`). `info` reports the method, focus order, used and
 skipped photos, the reference, alignment ranges (shift, rotation, scale, lowest NCC), warnings and the
 seconds each pass took (`LIGHTCRAFT_PROFILE=1` also prints them).
 
@@ -137,5 +140,4 @@ scale in `BaselineExposure`; raw sources keep their DNG colour tags (camera RGB)
 - Panorama output is limited to `maxMegapixels` (default 40) — blending memory is ~25 bytes/pixel.
 - The browser build has no file access for merges yet.
 - Focus stack: CPU only so far (GPU kernels to come); its speed against Helicon Focus has to be measured
-  on a Mac (`#18`). The depth map isn't embedded in the DNG yet (a separate PNG on request); no
-  retouching between methods/frames after the merge.
+  on a Mac (`#18`). No retouching between methods/frames after the merge yet.

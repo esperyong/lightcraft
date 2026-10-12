@@ -50,6 +50,27 @@ use crate::frame::{Frame, FrameColor};
 use crate::{MergeError, Progress, Result, check};
 pub use measure::Rect;
 
+/// `SemanticName` of a focus stack's depth map stored in its DNG (a DNG semantic mask, 0 = the
+/// first frame of the focus order … 65535 = the last).
+pub const DEPTH_MASK_NAME: &str = "urn:app:lightcraft:focus:depth";
+
+/// The depth map as a DNG semantic mask: 16-bit, fitted within 4096 px (a matte doesn't need the
+/// full resolution; the reader caps masks at 32 M samples).
+pub fn depth_mask(depth: &Plane) -> Option<lightcraft_raw::SemanticMask> {
+    if depth.width == 0 || depth.height == 0 {
+        return None;
+    }
+    let d = if depth.width.max(depth.height) > 4096 { fit(depth, 4096, 4096, Filter::Box) } else { depth.clone() };
+    Some(lightcraft_raw::SemanticMask {
+        name: DEPTH_MASK_NAME.into(),
+        instance_id: None,
+        width: d.width,
+        height: d.height,
+        sub_area: None,
+        data: d.data.iter().map(|v| (v.clamp(0.0, 1.0) * 65535.0).round() as u16).collect(),
+    })
+}
+
 /// How the frames are combined.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

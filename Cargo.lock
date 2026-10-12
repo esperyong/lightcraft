@@ -3198,6 +3198,7 @@ dependencies = [
  "lightcraft-scenes",
  "log",
  "pollster 1.0.1",
+ "rayon",
  "wgpu",
 ]
 

@@ -62,7 +62,15 @@ const MODULES: &[Module] = &[
     },
     Module {
         src: include_str!("wgsl/focus.wgsl"),
-        bindings: &[("src", false, "f32"), ("a", true, "f32"), ("b", true, "f32"), ("flags", true, "u32"), ("fs", true, "f32"), ("cs", true, "u32")],
+        bindings: &[
+            ("src", false, "f32"),
+            ("a", true, "f32"),
+            ("b", true, "f32"),
+            ("flags", true, "u32"),
+            ("fs", true, "f32"),
+            ("cs", true, "u32"),
+            ("frame", false, "u32"),
+        ],
         entries: &["fwarp", "fgrey", "fml", "fsub", "favg_w", "favg_init", "favg_add", "fdep_init", "fdep_add"],
     },
     Module {
@@ -408,9 +416,15 @@ impl Gpu {
 
     /// Submit command buffers, then make the buffers this thread dropped before reusable.
     pub fn submit(&self, cmds: impl IntoIterator<Item = wgpu::CommandBuffer>) {
-        self.queue.submit(cmds);
+        self.submit_indexed(cmds);
+    }
+
+    /// [`Gpu::submit`], returning the submission (to wait for it).
+    pub fn submit_indexed(&self, cmds: impl IntoIterator<Item = wgpu::CommandBuffer>) -> wgpu::SubmissionIndex {
+        let index = self.queue.submit(cmds);
         let retired = take_retired();
         self.pool(retired);
+        index
     }
 
     /// Put reusable buffers into the free pool (trimmed to its limit).

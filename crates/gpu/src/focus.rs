@@ -1,7 +1,11 @@
 //! Focus stacking's fuse pass on the render device (`wgsl/focus.wgsl`): each frame is uploaded,
 //! resampled into the output geometry, its focus measured, and folded into method A's or B's
 //! per-pixel state, which stays on the device until [`FocusPass::finish_average`] /
-//! [`FocusPass::finish_depth`] read it back once. The CPU stacker (`lightcraft_merge::focus`)
+//! [`FocusPass::finish_depth`] read it back once.
+//!
+//! Uploads are 16-bit (scaled to the frame's peak: finer than a raw's 14 bits everywhere), packed
+//! by all cores straight into one of two mapped staging buffers while the device works on the
+//! previous frame from the other; a frame waits only for its staging buffer's last copy. The CPU stacker (`lightcraft_merge::focus`)
 //! is the reference: the engine plugs this in behind `lightcraft_merge::focus::kernels`, and any
 //! failure is an `Err` the stacker answers by repeating the pass on the CPU.
 
@@ -39,7 +43,12 @@ struct Inner {
     sigma: f32,
     fs: Buf,
     cs: Option<Buf>,
-    src: Option<Buf>,
+    /// The frame on the device: 16-bit samples, two a word.
+    frame: Option<Buf>,
+    /// Staging buffers, used in turn.
+    staging: [Option<Staging>; 2],
+    /// Frames added so far.
+    added: usize,
     rgb: Buf,
     flags: Buf,
     grey: Buf,
@@ -53,9 +62,43 @@ struct Inner {
     spare: Vec<Buf>,
 }
 
-/// The module's six bindings, unused ones on distinct spare buffers.
+/// A staging buffer the CPU fills while the device copies from the other.
 #[cfg(not(target_arch = "wasm32"))]
-fn slots<'a>(b: [Option<&'a Buf>; 6], spare: &'a [Buf]) -> Vec<Option<&'a Buf>> {
+struct Staging {
+    buf: wgpu::Buffer,
+    /// The mapping asked for after its last copy: its result arrives here.
+    mapping: Option<std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
+    /// The submission whose copy last read it.
+    used_by: Option<wgpu::SubmissionIndex>,
+}
+
+/// Bytes packed per task.
+#[cfg(not(target_arch = "wasm32"))]
+const PACK_CHUNK: usize = 1 << 17;
+
+/// `src` as 16-bit samples (`× scale`, rounded, clamped; NaN → 0), written in parallel into `dst`
+/// (zeros past the end of `src`).
+#[cfg(not(target_arch = "wasm32"))]
+fn pack(dst: wgpu::WriteOnly<'_, [u8]>, src: &[f32], scale: f32) {
+    use rayon::prelude::*;
+    let fill = |at: usize, mut part: wgpu::WriteOnly<'_, [u8]>| {
+        let mut tmp = vec![0u8; part.len()];
+        for (j, o) in tmp.chunks_exact_mut(2).enumerate() {
+            let v = src.get(at / 2 + j).copied().unwrap_or(0.0);
+            o.copy_from_slice(&((v * scale).round().clamp(0.0, 65535.0) as u16).to_le_bytes());
+        }
+        part.copy_from_slice(&tmp);
+    };
+    let (chunks, rest) = dst.into_chunks::<PACK_CHUNK>();
+    let parts: Vec<wgpu::WriteOnly<'_, [u8; PACK_CHUNK]>> = chunks.into_iter().collect();
+    let tail = parts.len() * PACK_CHUNK;
+    parts.into_par_iter().enumerate().for_each(|(k, part)| fill(k * PACK_CHUNK, part.into()));
+    fill(tail, rest);
+}
+
+/// The module's seven bindings, unused ones on distinct spare buffers.
+#[cfg(not(target_arch = "wasm32"))]
+fn slots<'a>(b: [Option<&'a Buf>; 7], spare: &'a [Buf]) -> Vec<Option<&'a Buf>> {
     let mut k = 0;
     b.iter()
         .map(|s| {
@@ -98,12 +141,12 @@ impl FocusPass {
                 let mut cx = Cx::new(gpu);
                 let fs = gpu.buffer(5 * n);
                 let cs = depth.then(|| gpu.buffer(9 * n));
-                let spare: Vec<Buf> = (0..6).map(|_| gpu.buffer(1)).collect();
+                let spare: Vec<Buf> = (0..7).map(|_| gpu.buffer(1)).collect();
                 let p = [n as u32];
                 if depth {
-                    cx.run("fdep_init", &p, &slots([None, None, None, None, Some(&fs), cs.as_ref()], &spare), groups1(n));
+                    cx.run("fdep_init", &p, &slots([None, None, None, None, Some(&fs), cs.as_ref(), None], &spare), groups1(n));
                 } else {
-                    cx.run("favg_init", &p, &slots([None, None, None, None, Some(&fs), None], &spare), groups1(n));
+                    cx.run("favg_init", &p, &slots([None, None, None, None, Some(&fs), None, None], &spare), groups1(n));
                 }
                 cx.flush();
                 Inner {
@@ -115,7 +158,9 @@ impl FocusPass {
                     sigma,
                     fs,
                     cs,
-                    src: None,
+                    frame: None,
+                    staging: [None, None],
+                    added: 0,
                     rgb: gpu.buffer(3 * n),
                     flags: gpu.buffer(n),
                     grey: gpu.buffer(n),
@@ -156,33 +201,58 @@ impl FocusPass {
             if out[2] != w || out[3] != h {
                 return Err("the output rectangle changed".into());
             }
-            let len = 3 * src.width * src.height;
-            if len == 0 || !gpu.fits(len) {
+            let samples = 3 * src.width * src.height;
+            let words = samples.div_ceil(2) + 1;
+            if samples == 0 || !gpu.fits(words) {
                 return Err(format!("a {}×{} frame is over the device's buffer limit", src.width, src.height));
             }
-            // one frame in flight: without the wait, frames already in memory would queue their
-            // uploads (a staging copy each) far ahead of the device
-            gpu.device
-                .poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(60)) })
-                .map_err(|e| format!("waiting for the previous frame: {e}"))?;
-            if s.src.as_ref().is_none_or(|b| b.len != len) {
-                s.src = Some(gpu.buffer(len));
+            if s.frame.as_ref().is_none_or(|b| b.len != words) {
+                s.frame = Some(gpu.buffer(words));
             }
+            // the frame's peak sets the 16-bit scale
+            let flat: &[f32] = bytemuck::cast_slice(&src.data);
+            let peak = {
+                use rayon::prelude::*;
+                flat.par_iter().copied().filter(|v| v.is_finite()).reduce(|| 0.0, f32::max)
+            };
+            let scale = if peak > 0.0 { 65535.0 / peak } else { 1.0 };
+            let bytes = (words * 4) as u64;
+            let slot = s.added % 2;
+            let staging = stage(gpu, &mut s.staging[slot], bytes)?;
+            let Some(fb) = s.frame.as_ref() else { return Err("no frame buffer".into()) };
+            // pack, copy to the device, and map again once the copy is done
+            let (copied, rx) = guarded(gpu, || {
+                if let Ok(mut view) = staging.buf.get_mapped_range_mut(..bytes) {
+                    pack(view.slice(..), flat, scale);
+                }
+                staging.buf.unmap();
+                let mut enc = gpu.encoder();
+                enc.copy_buffer_to_buffer(&staging.buf, 0, fb.raw(), 0, bytes);
+                let copied = gpu.submit_indexed([enc.finish()]);
+                let (tx, rx) = std::sync::mpsc::channel();
+                staging.buf.map_async(wgpu::MapMode::Write, .., move |r| {
+                    let _ = tx.send(r);
+                });
+                (copied, rx)
+            })?;
+            staging.mapping = Some(rx);
+            staging.used_by = Some(copied);
+            s.added += 1;
             guarded(gpu, || {
-                let Some(sb) = s.src.as_ref() else { return };
-                gpu.queue.write_buffer(sb.raw(), 0, bytemuck::cast_slice(&src.data));
+                let Some(sb) = s.frame.as_ref() else { return };
                 let mut cx = Cx::new(gpu);
                 let mut p: Vec<u32> = vec![n as u32, w as u32, out[0] as u32, out[1] as u32, src.width as u32, src.height as u32, bicubic as u32];
                 p.extend(hm.iter().map(|v| (*v as f32).to_bits()));
                 p.extend(inv_gain.iter().map(|v| v.to_bits()));
                 p.push(sat.to_bits());
+                p.push((1.0 / scale).to_bits());
                 let sp = &s.spare;
-                cx.run("fwarp", &p, &slots([Some(sb), Some(&s.rgb), None, Some(&s.flags), None, None], sp), groups1(n));
-                cx.run("fgrey", &[n as u32], &slots([Some(&s.rgb), Some(&s.grey), None, None, None, None], sp), groups1(n));
+                cx.run("fwarp", &p, &slots([None, Some(&s.rgb), None, Some(&s.flags), None, None, Some(sb)], sp), groups1(n));
+                cx.run("fgrey", &[n as u32], &slots([Some(&s.rgb), Some(&s.grey), None, None, None, None, None], sp), groups1(n));
                 cx.run(
                     "fml",
                     &[n as u32, w as u32, h as u32],
-                    &slots([Some(&s.grey), Some(&s.ml), None, Some(&s.flags), None, None], sp),
+                    &slots([Some(&s.grey), Some(&s.ml), None, Some(&s.flags), None, None, None], sp),
                     groups1(n),
                 );
                 box_mean(&mut cx, &s.ml, &s.tmp, &s.fm, w, h, s.radius);
@@ -190,21 +260,21 @@ impl FocusPass {
                     let step = (n / 50_000).max(1);
                     let count = n.div_ceil(step);
                     let sub = gpu.buffer(count);
-                    cx.run("fsub", &[count as u32, step as u32], &slots([Some(&s.fm), Some(&sub), None, None, None, None], sp), groups1(count));
+                    cx.run("fsub", &[count as u32, step as u32], &slots([Some(&s.fm), Some(&sub), None, None, None, None, None], sp), groups1(count));
                     cx.run(
                         "fdep_add",
                         &[n as u32, pos as u32],
-                        &slots([Some(&s.rgb), None, Some(&s.fm), Some(&s.flags), Some(&s.fs), s.cs.as_ref()], sp),
+                        &slots([Some(&s.rgb), None, Some(&s.fm), Some(&s.flags), Some(&s.fs), s.cs.as_ref(), None], sp),
                         groups1(n),
                     );
                     s.subs.push((sub, count));
                 } else {
-                    cx.run("favg_w", &[n as u32], &slots([Some(&s.fm), Some(&s.grey), None, None, None, None], sp), groups1(n));
+                    cx.run("favg_w", &[n as u32], &slots([Some(&s.fm), Some(&s.grey), None, None, None, None, None], sp), groups1(n));
                     let wt = gaussian(&mut cx, &s.grey, w, h, 1, s.sigma);
                     cx.run(
                         "favg_add",
                         &[n as u32, (pos as f32).to_bits()],
-                        &slots([Some(&s.rgb), None, Some(&wt), Some(&s.flags), Some(&s.fs), None], sp),
+                        &slots([Some(&s.rgb), None, Some(&wt), Some(&s.flags), Some(&s.fs), None, None], sp),
                         groups1(n),
                     );
                 }
@@ -276,6 +346,42 @@ impl FocusPass {
             Err("no GPU in the browser build".into())
         }
     }
+}
+
+/// The staging buffer of `slot`, mapped and at least `bytes` long: a new one (mapped at creation),
+/// or the old one once the device has copied from it and mapped it again.
+#[cfg(not(target_arch = "wasm32"))]
+fn stage<'a>(gpu: &Gpu, slot: &'a mut Option<Staging>, bytes: u64) -> Result<&'a mut Staging, String> {
+    if slot.as_ref().is_some_and(|st| st.buf.size() < bytes) {
+        *slot = None;
+    }
+    let st = match slot {
+        Some(st) => st,
+        None => {
+            let buf = guarded(gpu, || {
+                gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("focus frame staging"),
+                    size: bytes,
+                    usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: true,
+                })
+            })?;
+            slot.insert(Staging { buf, mapping: None, used_by: None })
+        }
+    };
+    if let Some(rx) = st.mapping.take() {
+        // the copy that last read it: once done (and the frames before it), it maps again
+        gpu.device
+            .poll(wgpu::PollType::Wait { submission_index: st.used_by.take(), timeout: Some(std::time::Duration::from_secs(60)) })
+            .map_err(|e| format!("waiting for an upload: {e}"))?;
+        // another thread's poll may be the one that runs the callback: allow it a moment
+        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(format!("staging buffer: {e}")),
+            Err(e) => return Err(format!("staging buffer: {e}")),
+        }
+    }
+    Ok(st)
 }
 
 /// Mean over `(2r+1)²` (clamped edges): `src → tmp → dst` (`measure::box_mean_into`).

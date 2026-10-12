@@ -2,7 +2,8 @@
 // geometry, the focus measure, and the per-pixel updates of methods A and B, whose state stays on
 // the device. Each kernel mirrors its CPU twin in `crates/merge/src/focus/` (named in the
 // comment); keep them in step.
-// Bindings: src (an input), a, b (planes), flags, fs (float state), cs (word state).
+// Bindings: src (an input), a, b (planes), flags, fs (float state), cs (word state), frame (the
+// frame uploaded: 16-bit samples, two a word, low half first).
 // 1-D kernels: P[0] = pixel count.
 
 const VALID: u32 = 1u;
@@ -25,9 +26,23 @@ fn cr(t: f32) -> vec4<f32> {
     return vec4<f32>(0.5 * (-t3 + 2.0 * t2 - t), 0.5 * (3.0 * t3 - 5.0 * t2 + 2.0), 0.5 * (-3.0 * t3 + 4.0 * t2 + t), 0.5 * (t3 - t2));
 }
 
-// Pixel (x, y) of the `sw × sh` source, clamped.
+// Pixel `i` of the uploaded frame (fwarp's P[20]: the value of one 16-bit step).
+fn frame_rgb(i: u32) -> vec3<f32> {
+    let k = 3u * i;
+    let w0 = frame[k >> 1u];
+    let w1 = frame[(k >> 1u) + 1u];
+    var q: vec3<u32>;
+    if ((k & 1u) == 0u) {
+        q = vec3<u32>(w0 & 0xffffu, w0 >> 16u, w1 & 0xffffu);
+    } else {
+        q = vec3<u32>(w0 >> 16u, w1 & 0xffffu, w1 >> 16u);
+    }
+    return vec3<f32>(q) * pf(20u);
+}
+
+// Pixel (x, y) of the `sw × sh` frame, clamped.
 fn at(x: i32, y: i32, sw: i32, sh: i32) -> vec3<f32> {
-    return src_rgb(u32(clamp(y, 0, sh - 1) * sw + clamp(x, 0, sw - 1)));
+    return frame_rgb(u32(clamp(y, 0, sh - 1) * sw + clamp(x, 0, sw - 1)));
 }
 
 // `sample` (measure.rs): Catmull–Rom or bilinear at continuous coordinates (centres at +0.5).
@@ -61,7 +76,8 @@ fn sample_src(x: f32, y: f32, sw: i32, sh: i32, bicubic: bool) -> vec3<f32> {
 }
 
 // `warp` (measure.rs). P: 0 n, 1 ow, 2 ox, 3 oy, 4 sw, 5 sh, 6 bicubic, 7..16 h (f32, output →
-// source), 16..19 inverse gains, 19 saturation level. src = the frame; a = rgb out; flags out.
+// source), 16..19 inverse gains, 19 saturation level, 20 the frame's 16-bit step. frame in; a = rgb
+// out; flags out.
 @compute @workgroup_size(256)
 fn fwarp(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
     let i = lin_index(g, nw);

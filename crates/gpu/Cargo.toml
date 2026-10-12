@@ -23,6 +23,7 @@ log = { workspace = true }
 wgpu = { workspace = true }
 pollster = { workspace = true }
 bytemuck = { workspace = true }
+rayon = { workspace = true }
 
 [features]
 default = []

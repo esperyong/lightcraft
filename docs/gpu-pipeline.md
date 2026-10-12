@@ -109,8 +109,10 @@ walks the drive.
 
 Focus stacking (`lightcraft_merge::focus`) runs the fuse pass of methods A and B on the render
 device too (`crates/gpu/src/focus.rs`, `wgsl/focus.wgsl`): each frame is uploaded, resampled,
-measured and folded into the method's state, which stays on the device until it is read back once;
-one frame is in flight at a time. The engine plugs it into the stacker
+measured and folded into the method's state, which stays on the device until it is read back once.
+Frames go up as 16-bit samples scaled to their peak (6 bytes a pixel instead of 12; finer than a
+raw's 14 bits), packed by all cores straight into one of two mapped staging buffers while the device
+works on the previous frame from the other. The engine plugs it into the stacker
 (`lightcraft_engine::merge::GpuFocusKernels`); any device error makes the stacker repeat the pass on
 the CPU. `crates/engine/tests/focus_equivalence.rs` holds the two to < 0.5 LSB mean.
 

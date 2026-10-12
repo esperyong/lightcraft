@@ -105,6 +105,30 @@ pub enum GridBadges {
     Never,
 }
 
+/// Which decoder develops raws (`app.rawDecoder`; offered on a Mac, where Apple's raw decoder is).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RawDecoder {
+    /// Apple's decoder for the raws LightCraft's own can't develop.
+    #[default]
+    Auto,
+    /// Apple's first for every raw but DNG.
+    Apple,
+    /// LightCraft's own only.
+    Builtin,
+}
+
+impl RawDecoder {
+    /// The `app.rawDecoder` mode.
+    pub fn name(self) -> &'static str {
+        match self {
+            RawDecoder::Auto => "auto",
+            RawDecoder::Apple => "apple",
+            RawDecoder::Builtin => "builtin",
+        }
+    }
+}
+
 /// The loupe's info overlay (Cmd+I cycles; I in the full-screen preview).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -154,6 +178,8 @@ pub struct AppSettings {
     pub film_badges: bool,
     /// Grid: when to show the rating / flag / edited badges.
     pub grid_badges: GridBadges,
+    /// Which decoder develops raws (`app.rawDecoder`).
+    pub raw_decoder: RawDecoder,
     /// Shortcuts the user changed (Help ▸ Keyboard Shortcuts): command id → shortcut, `""` = none.
     pub keymap: crate::shortcuts::Keymap,
 }
@@ -171,6 +197,7 @@ impl Default for AppSettings {
             film_names: true,
             film_badges: true,
             grid_badges: GridBadges::Auto,
+            raw_decoder: RawDecoder::Auto,
             keymap: Default::default(),
         }
     }

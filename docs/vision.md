@@ -108,8 +108,8 @@ closed eyes), and its image feature prints for Find Similar Photos.
 
 ## Design
 
-- `crates/vision` (L3) wraps the Objective-C calls in a safe API (`features`, `analyze`, `subject`). It is the third
-  crate allowed `unsafe` (after `crates/sysmem` and `crates/mpsgraph`; see AGENTS.md), through the pure-Rust `objc2`
+- `crates/vision` (L3) wraps the Objective-C calls in a safe API (`features`, `analyze`, `subject`). It is one of the
+  crates allowed `unsafe` (with `crates/sysmem`, `crates/mpsgraph` and `crates/coreimage`; see AGENTS.md), through the pure-Rust `objc2`
   bindings (no C, no Swift helper process). Objective-C exceptions cannot be caught without a C helper, so images are
   checked against their size before they become a `CGImage`, classes newer than the running macOS are looked up
   before they are created, and Vision's masks are read only after their pixel format, planarity, stride and data size

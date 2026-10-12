@@ -12,7 +12,7 @@ use egui::RichText;
 use serde_json::{Value, json};
 
 use crate::LightcraftApp;
-use crate::state::{GridBadges, PREVIEW_LIMITS, StartupView};
+use crate::state::{GridBadges, PREVIEW_LIMITS, RawDecoder, StartupView};
 use crate::theme::Tokens;
 use crate::widgets::register;
 
@@ -367,6 +367,20 @@ fn import_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
 
 // --------------------------------------------------------------------------------- Performance
 
+/// What Settings says under the raw decoder choice: why Apple's decoder is not used, or what the choice does.
+fn raw_decoder_note(app: &LightcraftApp) -> &'static str {
+    let raw = &app.session.media.raw;
+    if !raw.available() {
+        "Apple's raw decoder needs macOS 12 or later."
+    } else if lightcraft_engine::apple_raw::env_mode().is_some() {
+        "LIGHTCRAFT_RAW_DECODER overrides this setting."
+    } else if raw.effective() == lightcraft_engine::apple_raw::Mode::Builtin && app.ui.settings.raw_decoder != RawDecoder::Builtin {
+        "Apple's raw decoder was turned off for this session: its decodes kept taking too long."
+    } else {
+        "Automatic develops the raws LightCraft can't decode yet (such as compressed Olympus ORF and Nikon High Efficiency NEF) with Apple's raw decoder; Apple develops every raw but DNG with it. For raws already imported as preview only, use Photo ▸ Reload from Disk."
+    }
+}
+
 fn performance_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     use lightcraft_engine::gpu;
     heading(ui, t, crate::i18n::tr("Rendering"));
@@ -380,6 +394,15 @@ fn performance_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
         format!("GPU: {}", gpu::adapter_name().unwrap_or_else(|| "starting…".into()))
     };
     hint(ui, t, &status);
+    // Apple's raw decoder (Core Image) exists only on a Mac
+    if cfg!(target_os = "macos") {
+        row(ui, t, crate::i18n::tr("Raw decoder"), |ui| {
+            let opts =
+                [(RawDecoder::Auto, crate::i18n::tr("Automatic")), (RawDecoder::Apple, "Apple"), (RawDecoder::Builtin, crate::i18n::tr("Built-in"))];
+            choices(ui, "settingsRawDecoder", &opts, &mut app.ui.settings.raw_decoder);
+        });
+        hint(ui, t, raw_decoder_note(app));
+    }
     row(ui, t, crate::i18n::tr("Preview size"), |ui| {
         let opts: Vec<(u32, String)> =
             PREVIEW_LIMITS.iter().map(|e| (*e, if *e == 0 { crate::i18n::tr("Automatic").to_string() } else { format!("{e} px") })).collect();

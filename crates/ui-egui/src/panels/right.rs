@@ -482,7 +482,8 @@ fn info(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         camera_card(ui, &p);
         ui.add_space(6.0);
         if let Some(why) = &p.preview_only {
-            crate::widgets::preview_only_notice(ui, "info", why);
+            let apple_raw = app.session.media.raw.effective() != lightcraft_engine::apple_raw::Mode::Builtin;
+            crate::widgets::preview_only_notice(ui, "info", why, apple_raw);
             ui.add_space(6.0);
         }
         if let Some(name) = &p.copy_name {

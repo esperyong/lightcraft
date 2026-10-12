@@ -40,8 +40,9 @@ pub fn preview_only_explanation(reason: &str) -> String {
 }
 
 /// A panel notice for a raw shown from its embedded preview (Edit, Info): an amber info icon,
-/// "Preview only" and the explanation. Registered as `notice:previewOnly:{key}`.
-pub fn preview_only_notice(ui: &mut Ui, key: &str, reason: &str) {
+/// "Preview only" and the explanation; `reload` adds that Reload from Disk develops it now (Apple's raw decoder is
+/// in use). Registered as `notice:previewOnly:{key}`.
+pub fn preview_only_notice(ui: &mut Ui, key: &str, reason: &str, reload: bool) {
     let t = Tokens::get(ui.ctx());
     let r = egui::Frame::NONE
         .fill(t.canvas)
@@ -57,6 +58,14 @@ pub fn preview_only_notice(ui: &mut Ui, key: &str, reason: &str) {
             });
             ui.add_space(2.0);
             ui.label(egui::RichText::new(preview_only_explanation(reason)).size(11.5).color(t.text_label));
+            if reload {
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr("Photo ▸ Reload from Disk develops it with Apple's raw decoder."))
+                        .size(11.5)
+                        .color(t.text_label),
+                );
+            }
         })
         .response;
     let r = r.on_hover_text(crate::i18n::tr_format!("Decoder: {reason}", reason = reason));

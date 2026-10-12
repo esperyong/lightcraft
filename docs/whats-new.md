@@ -2,6 +2,13 @@
 
 ## October 2026
 
+### Apple's raw decoder on the Mac
+- On macOS 12+, raws LightCraft can't decode yet (compressed Olympus ORF, Nikon High Efficiency NEF…) develop with
+  Apple's raw decoder instead of opening from their embedded JPEG. Settings ▸ Performance ▸ Raw decoder chooses
+  Automatic (the default), Apple (every raw but DNG) or Built-in; agents use `app.rawDecoder`, scripts
+  `LIGHTCRAFT_RAW_DECODER`. Raws already imported as preview only develop after Photo ▸ Reload from Disk (see
+  [apple-raw.md](apple-raw.md)).
+
 ### Apple Vision on the Mac (subject masks, labels, aesthetics)
 - Masking ▸ Subject / Background use Apple Vision's subject on macOS 14+: the mask appears at once and refines when
   Vision answers. The subject is stored with the mask, so previews, exports and other platforms show the same.

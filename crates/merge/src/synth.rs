@@ -244,8 +244,9 @@ pub fn focus_bracket(w: usize, h: usize, p: &FocusSynth) -> Result<FocusBracket>
     Ok(FocusBracket { frames, truth, depth, transforms })
 }
 
-/// A focus bracket ([`focus_bracket`]) as 16-bit linear DNGs with capture times one second apart.
-pub fn focus_bracket_dngs(w: usize, h: usize, n: usize) -> Result<Vec<Vec<u8>>> {
+/// A focus bracket ([`focus_bracket`]) as 16-bit linear DNGs with capture times one second apart,
+/// the first `first_second` seconds after 10:00.
+pub fn focus_bracket_dngs(w: usize, h: usize, n: usize, first_second: usize) -> Result<Vec<Vec<u8>>> {
     let b = focus_bracket(w, h, &FocusSynth { n, ..Default::default() })?;
     let to_xyz = lightcraft_color::bradford(lightcraft_color::D65, lightcraft_color::D50).mul(&lightcraft_color::REC2020.to_xyz());
     let color = FrameColor::Linear { to_xyz_d50: to_xyz };
@@ -264,8 +265,8 @@ pub fn focus_bracket_dngs(w: usize, h: usize, n: usize) -> Result<Vec<Vec<u8>>> 
                     month: 10,
                     day: 12,
                     hour: 10,
-                    minute: (i / 60) as u8,
-                    second: (i % 60) as u8,
+                    minute: ((first_second + i) / 60 % 60) as u8,
+                    second: ((first_second + i) % 60) as u8,
                     millis: 0,
                     offset_minutes: None,
                 }),

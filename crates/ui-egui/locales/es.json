@@ -1764,5 +1764,7 @@
   "Depth": "Profundidad",
   "Embed Depth Map": "Incrustar mapa de profundidad",
   "Select Depth Range (near → far)": "Seleccionar rango de profundidad (cerca → lejos)",
-  "This photo has no depth map (focus stacks have one).": "Esta foto no tiene mapa de profundidad (los apilados de enfoque sí)."
+  "This photo has no depth map (focus stacks have one).": "Esta foto no tiene mapa de profundidad (los apilados de enfoque sí).",
+  "Focus Stack Each Bracket": "Apilar cada horquillado de enfoque",
+  "Detect Focus Brackets": "Detectar horquillados de enfoque"
 }

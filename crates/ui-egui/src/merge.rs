@@ -182,6 +182,11 @@ pub struct MergeState {
     pub last: std::collections::HashMap<String, MergeDialog>,
     /// Finished previews, most recent last.
     pub cache: Vec<CachedPreview>,
+    /// Focus brackets waiting to be stacked after the running merge, with their options, and how
+    /// many the batch had.
+    pub queue: std::collections::VecDeque<Vec<PhotoId>>,
+    pub queue_opts: Option<MergeDialog>,
+    pub queue_total: usize,
     /// Options changed by a slider and when (the preview starts once they rest).
     pub pending: Option<(MergeDialog, f64)>,
 }
@@ -255,6 +260,40 @@ pub fn start_final(app: &mut LightcraftApp, opts: &MergeDialog) -> Result<Value,
     app.merge.final_task = Some(task);
     app.merge.last.insert(opts.command.clone(), opts.clone());
     Ok(json!({"started": true, "photos": ids.len()}))
+}
+
+/// Focus-stack every focus bracket in the selection (or the photos shown), one after the other
+/// in the background, with the options of the last focus stack.
+pub fn start_brackets(app: &mut LightcraftApp) -> Result<Value, String> {
+    if app.merge.final_task.is_some() {
+        return Err("a merge is already running".into());
+    }
+    let r = app.session.execute("merge.detectFocusBrackets", &json!({})).map_err(|e| e.to_string())?;
+    let groups: Vec<Vec<PhotoId>> = r["groups"]
+        .as_array()
+        .map(|a| a.iter().map(|g| g.as_array().map(|v| v.iter().filter_map(Value::as_u64).map(PhotoId).collect()).unwrap_or_default()).collect())
+        .unwrap_or_default();
+    if groups.is_empty() {
+        return Err("no focus brackets found (photos shot within 2 s of each other with the same camera settings)".into());
+    }
+    let opts = app.merge.last.get("merge.focusStack").cloned().unwrap_or_else(|| MergeDialog::for_command("merge.focusStack"));
+    app.merge.queue_total = groups.len();
+    app.merge.queue = groups.into();
+    app.merge.queue_opts = Some(opts);
+    start_queued(app)?;
+    Ok(json!({"brackets": app.merge.queue_total}))
+}
+
+/// Start the next queued bracket.
+fn start_queued(app: &mut LightcraftApp) -> Result<(), String> {
+    let (Some(ids), Some(opts)) = (app.merge.queue.pop_front(), app.merge.queue_opts.clone()) else {
+        app.merge.queue_opts = None;
+        return Ok(());
+    };
+    let task = spawn(app, &opts, &ids, false)?;
+    app.merge.ids = ids;
+    app.merge.final_task = Some(task);
+    Ok(())
 }
 
 /// Merge the selection without the dialog, with the options last used for `command` (the
@@ -405,11 +444,21 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
                         app.toast(ctx, crate::i18n::tr_format!("{what} merge failed: {e}", e = e, what = what));
                     }
                 }
+                // the next focus bracket of a batch
+                if let Err(e) = start_queued(app) {
+                    app.merge.queue.clear();
+                    app.merge.queue_opts = None;
+                    app.ui.status = e;
+                }
             }
             Err(_) => {
                 let (f, stage) = t.progress.lock().map(|g| g.clone()).unwrap_or_default();
                 let now = ctx.input(|i| i.time);
-                app.ui.toast = Some((crate::i18n::tr_format!("Merging… {stage} {:.0}%", f * 100.0, stage = stage), now + 0.5, None));
+                let mut text = crate::i18n::tr_format!("Merging… {stage} {:.0}%", f * 100.0, stage = stage);
+                if app.merge.queue_opts.is_some() && app.merge.queue_total > 1 {
+                    text.push_str(&format!(" · {}/{}", app.merge.queue_total - app.merge.queue.len(), app.merge.queue_total));
+                }
+                app.ui.toast = Some((text, now + 0.5, None));
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }

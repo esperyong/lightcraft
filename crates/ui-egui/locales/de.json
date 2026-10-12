@@ -1919,5 +1919,7 @@
   "Depth": "Tiefe",
   "Embed Depth Map": "Tiefenkarte einbetten",
   "Select Depth Range (near → far)": "Tiefenbereich wählen (nah → fern)",
-  "This photo has no depth map (focus stacks have one).": "Dieses Foto hat keine Tiefenkarte (Fokus-Stacks haben eine)."
+  "This photo has no depth map (focus stacks have one).": "Dieses Foto hat keine Tiefenkarte (Fokus-Stacks haben eine).",
+  "Focus Stack Each Bracket": "Jede Fokusreihe stacken",
+  "Detect Focus Brackets": "Fokusreihen erkennen"
 }

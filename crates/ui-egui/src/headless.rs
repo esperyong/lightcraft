@@ -366,6 +366,35 @@ impl Headless {
 
 #[cfg(test)]
 mod tests {
+    /// Photo Merge ▸ Focus Stack Each Bracket finds the brackets in the selection and stacks them
+    /// one after the other in the background.
+    #[test]
+    fn focus_brackets_stack_one_after_another_in_the_background() {
+        let dir = std::env::temp_dir().join(format!("lc-ui-focus-batch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut paths = Vec::new();
+        for (b, start) in [(0, 0), (1, 30)] {
+            for (i, d) in lightcraft_merge::synth::focus_bracket_dngs(160, 110, 3, start).unwrap().into_iter().enumerate() {
+                let p = dir.join(format!("B{b}_{i}.dng"));
+                std::fs::write(&p, d).unwrap();
+                paths.push(p.to_string_lossy().to_string());
+            }
+        }
+        let services = crate::Services { png: None, ..Default::default() };
+        let app = LightcraftApp::new(lightcraft_engine::Session::new().with_fs(), services);
+        let mut h = Headless::new(app, [1300.0, 900.0], 1.0);
+        let t = Duration::from_secs(10);
+        h.request("engine.execute", json!({"command": "library.import", "params": {"paths": paths}}), t);
+        h.request("engine.execute", json!({"command": "library.selectAll"}), t);
+        let r = h.request("ui.menu.invoke", json!({"command": "merge.focusStackBrackets"}), t);
+        assert_eq!(r["result"]["brackets"], 2, "{r}");
+        assert!(h.step_until(Duration::from_secs(120), |h| !h.app.merge.busy() && h.app.merge.queue.is_empty()));
+        let stacked: Vec<String> = h.app.session.catalog.photos().filter(|p| p.file_name.contains("-Focus")).map(|p| p.file_name.clone()).collect();
+        assert_eq!(stacked.len(), 2, "{stacked:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn detail_offers_ai_denoise_for_raw_photos_and_leads_to_its_settings() {
         use crate::state::Dialog;

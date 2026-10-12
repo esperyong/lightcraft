@@ -99,7 +99,7 @@ fn focus_stack_command_streams_a_bracket_into_a_dng() {
     let n = 6;
     let mut paths = Vec::new();
     // file names run against the capture order: the merge must follow the capture times
-    for (i, b) in lightcraft_merge::synth::focus_bracket_dngs(480, 320, n).unwrap().into_iter().enumerate() {
+    for (i, b) in lightcraft_merge::synth::focus_bracket_dngs(480, 320, n, 0).unwrap().into_iter().enumerate() {
         let p = dir.join(format!("F_{}.dng", n - 1 - i));
         std::fs::write(&p, b).unwrap();
         paths.push(p.to_string_lossy().to_string());
@@ -151,5 +151,37 @@ fn focus_stack_command_streams_a_bracket_into_a_dng() {
     // bad parameters are errors, not panics
     assert!(s.execute("merge.focusStack", &json!({"ids": ids, "method": "x"})).is_err());
     assert!(s.execute("merge.focusStack", &json!({"ids": [ids[0]]})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn focus_brackets_are_detected_and_stacked_in_a_batch() {
+    let dir = temp_dir("focus-batch");
+    let mut paths = Vec::new();
+    // two brackets of 4, half a minute apart
+    for (b, start) in [(0, 0), (1, 30)] {
+        for (i, d) in lightcraft_merge::synth::focus_bracket_dngs(240, 160, 4, start).unwrap().into_iter().enumerate() {
+            let p = dir.join(format!("B{b}_{i}.dng"));
+            std::fs::write(&p, d).unwrap();
+            paths.push(p.to_string_lossy().to_string());
+        }
+    }
+    let mut s = Session::new().with_fs();
+    let ids = import(&mut s, paths);
+    let r = s.execute("merge.detectFocusBrackets", &json!({"ids": ids, "stack": true})).unwrap();
+    assert_eq!(r["count"], 2, "{r}");
+    assert_eq!(r["groups"][0].as_array().unwrap().len(), 4);
+    assert_eq!(r["stacked"], 2);
+    let r = s.execute("merge.focusStackBatch", &json!({"ids": ids, "method": "a", "autoSettings": false})).unwrap();
+    assert_eq!(r["count"], 2, "{r}");
+    assert!(r["failed"].as_array().unwrap().is_empty(), "{r}");
+    let paths: Vec<&str> = r["results"].as_array().unwrap().iter().map(|v| v["path"].as_str().unwrap()).collect();
+    assert!(paths[0].ends_with("B0_0-Focus.dng") && paths[1].ends_with("B1_0-Focus.dng"), "{paths:?}");
+    // the results are not brackets themselves
+    let all: Vec<u64> = s.catalog.photos().map(|p| p.id.0).collect();
+    assert_eq!(s.execute("merge.detectFocusBrackets", &json!({"ids": all})).unwrap()["count"], 2);
+    // a bad group fails alone
+    let r = s.execute("merge.focusStackBatch", &json!({"groups": [[ids[0]], [ids[4], ids[5]]], "autoSettings": false})).unwrap();
+    assert_eq!((r["results"].as_array().unwrap().len(), r["failed"].as_array().unwrap().len()), (1, 1), "{r}");
     let _ = std::fs::remove_dir_all(&dir);
 }

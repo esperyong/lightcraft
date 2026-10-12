@@ -9,6 +9,8 @@
   focus breathing) and evened out in brightness, and photos that don't belong to the bracket are left out.
 - Memory stays flat however many photos the bracket has: frames stream through the stacker one at a time. The result
   is a linear DNG (`-Focus.dng`) you edit like any raw. Also `merge.focusStack` and `lightcraft-cli merge focus`.
+- The depth map travels in the DNG: Masking ▸ Depth selects a near-to-far range of a focus-stacked photo.
+- Photo Merge ▸ Focus Stack Each Bracket finds the focus brackets in a shoot and stacks them one after the other.
 
 ### Apple's raw decoder on the Mac
 - On macOS 12+, raws LightCraft can't decode yet (compressed Olympus ORF, Nikon High Efficiency NEF…) develop with

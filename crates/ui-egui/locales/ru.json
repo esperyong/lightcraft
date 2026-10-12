@@ -1437,5 +1437,7 @@
   "Depth": "Глубина",
   "Embed Depth Map": "Встроить карту глубины",
   "Select Depth Range (near → far)": "Выбрать диапазон глубины (близко → далеко)",
-  "This photo has no depth map (focus stacks have one).": "У этого фото нет карты глубины (у стеков фокуса она есть)."
+  "This photo has no depth map (focus stacks have one).": "У этого фото нет карты глубины (у стеков фокуса она есть).",
+  "Focus Stack Each Bracket": "Стекинг каждой фокус-вилки",
+  "Detect Focus Brackets": "Найти фокус-вилки"
 }

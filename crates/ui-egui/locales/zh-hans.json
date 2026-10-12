@@ -1781,5 +1781,7 @@
   "Depth": "深度",
   "Embed Depth Map": "嵌入深度图",
   "Select Depth Range (near → far)": "选择深度范围（近 → 远）",
-  "This photo has no depth map (focus stacks have one).": "这张照片没有深度图（景深合成的结果才有）。"
+  "This photo has no depth map (focus stacks have one).": "这张照片没有深度图（景深合成的结果才有）。",
+  "Focus Stack Each Bracket": "逐个对焦包围进行景深合成",
+  "Detect Focus Brackets": "检测对焦包围"
 }

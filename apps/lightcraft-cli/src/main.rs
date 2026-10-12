@@ -489,7 +489,7 @@ fn synth_merge(args: &[String]) -> Result<(), String> {
             }
         }
         "focus" => {
-            for (k, b) in lightcraft_merge::synth::focus_bracket_dngs(1800, 1200, 12).map_err(|e| e.to_string())?.into_iter().enumerate() {
+            for (k, b) in lightcraft_merge::synth::focus_bracket_dngs(1800, 1200, 12, 0).map_err(|e| e.to_string())?.into_iter().enumerate() {
                 let p = Path::new(&dir).join(format!("focus-{k:02}.dng"));
                 std::fs::write(&p, b).map_err(|e| e.to_string())?;
                 written.push(p);

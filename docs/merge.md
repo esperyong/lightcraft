@@ -100,6 +100,13 @@ on it, e.g. to darken or blur what lies behind the subject. Optionally also as a
 skipped photos, the reference, alignment ranges (shift, rotation, scale, lowest NCC), warnings and the
 seconds each pass took (`LIGHTCRAFT_PROFILE=1` also prints them).
 
+**Many brackets.** `merge.detectFocusBrackets {ids?, gapSecs=2, minFrames=3, sameExposure=true, stack}`
+finds focus brackets (runs of photos at most `gapSecs` apart with the same camera, lens, focal length
+and exposure; merge results are left out) in the given photos, the selection or the photos shown, and
+optionally stacks each. `merge.focusStackBatch {groups? | the same scope, …merge.focusStack options}`
+stacks them one after the other (a bracket that fails is reported, the others still run). In the app,
+Photo Merge ▸ Focus Stack Each Bracket queues them in the background with the last focus-stack options.
+
 **For agents:** `merge.focusStack {ids, preview: true, previewPath, every: 4}` for a quick look (every 4th
 photo, ≤ 1024 px), compare `method: "a"|"b"|"c"`, `showDepth: true` to see the depth map, then run it
 without `preview`. `order: "auto"` when the files aren't in focus order.

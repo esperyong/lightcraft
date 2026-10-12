@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{Catalog, CatalogError, Op, PhotoId, Result, Stack, StackId};
+use crate::{Catalog, CatalogError, Op, Photo, PhotoId, Result, Stack, StackId};
 
 impl Catalog {
     pub fn stack(&self, id: StackId) -> Option<&Stack> {
@@ -225,6 +225,75 @@ impl Catalog {
     }
 }
 
+/// How [`Catalog::focus_bracket_groups`] tells the frames of one focus bracket.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BracketRule {
+    /// Consecutive frames at most this many seconds apart.
+    pub gap_secs: f64,
+    /// Groups smaller than this are not brackets.
+    pub min_frames: usize,
+    /// Same shutter speed, aperture and ISO (exposure brackets are HDR, not focus).
+    pub same_exposure: bool,
+    /// Same camera and lens.
+    pub same_lens: bool,
+    /// Same focal length (within 1 %).
+    pub same_focal: bool,
+}
+
+impl Default for BracketRule {
+    fn default() -> Self {
+        BracketRule { gap_secs: 2.0, min_frames: 3, same_exposure: true, same_lens: true, same_focal: true }
+    }
+}
+
+impl Catalog {
+    /// Focus brackets among `ids`: runs of photos (not deleted, not merge results, with a capture
+    /// time) shot at most `gap_secs` apart with the same camera settings, in capture order (then
+    /// file name: brackets are numbered in order and often share a second). Runs of at least
+    /// `min_frames` are returned.
+    pub fn focus_bracket_groups(&self, ids: &[PhotoId], rule: &BracketRule) -> Vec<Vec<PhotoId>> {
+        let mut timed: Vec<(i64, String, PhotoId)> = ids
+            .iter()
+            .filter_map(|id| self.photos.get(id))
+            .filter(|p| !p.deleted && crate::query::merged_kind(&p.file_name).is_none())
+            .filter_map(|p| Some((iso_seconds(p.captured.as_deref()?)?, p.file_name.clone(), p.id)))
+            .collect();
+        timed.sort();
+        timed.dedup_by_key(|(_, _, id)| *id);
+        let same = |a: &Photo, b: &Photo| {
+            let (ma, mb) = (&a.meta, &b.meta);
+            let lens = !rule.same_lens || (ma.camera == mb.camera && ma.lens == mb.lens);
+            let focal = !rule.same_focal
+                || match (ma.focal_mm, mb.focal_mm) {
+                    (Some(x), Some(y)) => (x - y).abs() <= 0.01 * x.abs().max(y.abs()),
+                    (x, y) => x.is_none() && y.is_none(),
+                };
+            let exposure = !rule.same_exposure
+                || (ma.shutter == mb.shutter
+                    && ma.iso == mb.iso
+                    && match (ma.aperture, mb.aperture) {
+                        (Some(x), Some(y)) => (x - y).abs() < 0.05,
+                        (x, y) => x.is_none() && y.is_none(),
+                    });
+            lens && focal && exposure
+        };
+        let mut groups: Vec<Vec<PhotoId>> = Vec::new();
+        let mut last: Option<(i64, PhotoId)> = None;
+        for (t, _, id) in timed {
+            let joins = last.is_some_and(|(lt, lid)| {
+                (t - lt) as f64 <= rule.gap_secs && self.photos.get(&lid).zip(self.photos.get(&id)).is_some_and(|(a, b)| same(a, b))
+            });
+            match groups.last_mut() {
+                Some(g) if joins => g.push(id),
+                _ => groups.push(vec![id]),
+            }
+            last = Some((t, id));
+        }
+        groups.retain(|g| g.len() >= rule.min_frames.max(2));
+        groups
+    }
+}
+
 /// Seconds since 1970-01-01 for an ISO 8601 local time (`2026-04-01T10:00:00`, `2026-04-01 10:00`,
 /// `2026-04-01`; fractions and zone suffixes are ignored). `None` if it doesn't parse.
 pub fn iso_seconds(s: &str) -> Option<i64> {
@@ -262,6 +331,43 @@ mod tests {
             ids.push(id);
         }
         (c, ids)
+    }
+
+    #[test]
+    fn focus_brackets_are_runs_of_identical_settings() {
+        let times = [
+            "2026-04-01T10:00:00",
+            "2026-04-01T10:00:00",
+            "2026-04-01T10:00:01",
+            "2026-04-01T10:00:01",
+            "2026-04-01T10:00:09", // a pause: the next bracket
+            "2026-04-01T10:00:10",
+            "2026-04-01T10:00:10",
+            "2026-04-01T10:00:11", // other exposure (an HDR frame)
+            "2026-04-01T10:00:12",
+        ];
+        let (mut c, ids) = cat(9, &times);
+        for (i, id) in ids.iter().enumerate() {
+            let Some(p) = c.photos.get_mut(id) else { continue };
+            let p = std::sync::Arc::make_mut(p);
+            p.meta.camera = "ILCE-7RM5".into();
+            p.meta.lens = "FE 90mm F2.8 Macro G OSS".into();
+            p.meta.focal_mm = Some(90.0);
+            p.meta.aperture = Some(8.0);
+            p.meta.iso = Some(100);
+            p.meta.shutter = if i == 7 { "1/30".into() } else { "1/125".into() };
+        }
+        let rule = BracketRule::default();
+        let g = c.focus_bracket_groups(&ids, &rule);
+        // the run breaks at the pause and at the different exposure; the last frame alone is no bracket
+        assert_eq!(g, vec![ids[0..4].to_vec(), ids[4..7].to_vec()]);
+        // ignoring exposure joins the HDR frame and the frame after it
+        let loose = BracketRule { same_exposure: false, ..rule.clone() };
+        assert_eq!(c.focus_bracket_groups(&ids, &loose)[1], ids[4..9].to_vec());
+        // merge results never belong to a bracket
+        let Some(p) = c.photos.get_mut(&ids[1]) else { return };
+        std::sync::Arc::make_mut(p).file_name = "0-Focus.dng".into();
+        assert_eq!(c.focus_bracket_groups(&ids, &rule)[0], vec![ids[0], ids[2], ids[3]]);
     }
 
     #[test]

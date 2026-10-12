@@ -38,6 +38,12 @@ use crate::{EngineError, Result, Session};
 /// Version of the project file this build writes.
 pub const PROJECT_VERSION: u32 = 1;
 
+/// Limits on strokes (they come from users and agents): strokes per retouch, points per stroke,
+/// and the brush radius (a fraction of the long edge).
+pub const MAX_STROKES: usize = 10_000;
+pub const MAX_POINTS: usize = 100_000;
+pub const MAX_SIZE: f32 = 0.5;
+
 /// The project file of a focus stack's DNG.
 pub fn project_path(dng: &str) -> String {
     format!("{dng}.lcfocus.json")
@@ -151,7 +157,13 @@ impl FocusProject {
 
     /// Check the strokes against the project (sources that exist, sane numbers).
     pub fn check(&self, strokes: &[RetouchStroke]) -> std::result::Result<(), String> {
+        if strokes.len() > MAX_STROKES {
+            return Err(format!("{} strokes (at most {MAX_STROKES})", strokes.len()));
+        }
         for (i, s) in strokes.iter().enumerate() {
+            if s.points.len() > MAX_POINTS {
+                return Err(format!("stroke {}: {} points (at most {MAX_POINTS})", i + 1, s.points.len()));
+            }
             match &s.source {
                 RetouchSource::Frame(k) if *k >= self.inputs.len() => {
                     return Err(format!("stroke {}: frame {k} doesn't exist (the stack has {} frames)", i + 1, self.inputs.len()));
@@ -161,7 +173,7 @@ impl FocusProject {
                 }
                 _ => {}
             }
-            if !(s.size.is_finite() && s.size > 0.0 && s.size <= 1.0) || s.points.iter().flatten().any(|v| !v.is_finite()) {
+            if !(s.size.is_finite() && s.size > 0.0 && s.size <= MAX_SIZE) || s.points.iter().flatten().any(|v| !v.is_finite() || v.abs() > 4.0) {
                 return Err(format!("stroke {}: size or points out of range", i + 1));
             }
         }
@@ -535,5 +547,56 @@ impl Session {
         crate::export::write_file_durable(&project_path(&job.path), text.as_bytes()).map_err(EngineError::Other)?;
         self.execute("photo.reload", &json!({"ids": [job.id.0]}))?;
         Ok(json!({"id": job.id.0, "path": job.path, "strokes": job.strokes.len(), "bytes": dng.len()}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project() -> FocusProject {
+        FocusProject {
+            version: PROJECT_VERSION,
+            inputs: vec!["a.dng".into(), "b.dng".into()],
+            ids: vec![],
+            options: FocusOptions::default(),
+            reference: 0,
+            maps: vec![Homography::IDENTITY.0; 2],
+            gains: vec![[1.0; 3]; 2],
+            crop: [0, 0, 10, 10],
+            frame_size: [10, 10],
+            strokes: vec![],
+        }
+    }
+
+    fn stroke(points: usize, size: f32) -> RetouchStroke {
+        RetouchStroke { source: RetouchSource::Frame(1), points: vec![[0.5, 0.5]; points], size, hardness: 0.5, opacity: 1.0 }
+    }
+
+    /// Hostile strokes (too many, too many points, a huge brush, NaN) are refused before any work.
+    #[test]
+    fn hostile_strokes_are_refused() {
+        let p = project();
+        assert!(p.check(&[stroke(10, 0.1)]).is_ok());
+        assert!(p.check(&[stroke(MAX_POINTS + 1, 0.1)]).is_err());
+        assert!(p.check(&vec![stroke(1, 0.1); MAX_STROKES + 1]).is_err());
+        assert!(p.check(&[stroke(1, 0.9)]).is_err());
+        assert!(p.check(&[stroke(1, f32::NAN)]).is_err());
+        let mut far = stroke(2, 0.1);
+        far.points[1] = [1e30, 0.5];
+        assert!(p.check(&[far]).is_err());
+        assert!(p.check(&[RetouchStroke { source: RetouchSource::Frame(2), ..stroke(1, 0.1) }]).is_err());
+    }
+
+    /// A stroke paints its source over the image within its radius, and nothing outside.
+    #[test]
+    fn a_stroke_composites_within_its_radius() {
+        let mut img = Rgb32f::filled(40, 20, [0.1; 3]);
+        let src = std::sync::Arc::new(Rgb32f::filled(40, 20, [0.9; 3]));
+        let s = RetouchStroke { source: RetouchSource::Frame(0), points: vec![[0.25, 0.5], [0.5, 0.5]], size: 0.1, hardness: 1.0, opacity: 1.0 };
+        composite(&mut img, &[s], |_| Ok(src.clone())).unwrap();
+        assert_eq!(img.get(15, 10), [0.9; 3]);
+        assert_eq!(img.get(35, 10), [0.1; 3]);
+        assert_eq!(img.get(15, 1), [0.1; 3]);
     }
 }

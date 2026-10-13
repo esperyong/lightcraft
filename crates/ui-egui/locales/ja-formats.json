@@ -209,5 +209,6 @@
   "•  {assumption}": "•  {assumption}",
   "Analyzed {} photos": "{}枚の写真を分析しました",
   "Analyzed {} photos ({} could not be analyzed)": "{}枚の写真を分析しました（{}枚は分析できませんでした）",
-  "Analyzing photos: {done} of {total}": "写真を分析中：{total}枚中{done}枚"
+  "Analyzing photos: {done} of {total}": "写真を分析中：{total}枚中{done}枚",
+  " · {} focus bracket{} stacked": "・フォーカスブラケット{0}組をスタック{1:.0}"
 }

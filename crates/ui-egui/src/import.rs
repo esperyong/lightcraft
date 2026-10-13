@@ -225,6 +225,8 @@ pub struct ImportTask {
     pub kept: usize,
     undo0: usize,
     first: Option<u64>,
+    /// The photos added (or restored), for stacking the focus brackets among them at the end.
+    ids: Vec<u64>,
     /// Reading a folder for the Local view: the photos stay out of the library, and nothing is
     /// selected or announced as added.
     browse: bool,
@@ -696,8 +698,9 @@ fn commit_batch(app: &mut LightcraftApp, task: &mut ImportTask, prepared: lightc
             for k in v["kept"].as_array().into_iter().flatten() {
                 log::warn!("import: kept {}: {}", k["path"].as_str().unwrap_or(""), k["reason"].as_str().unwrap_or(""));
             }
+            task.ids.extend(["imported", "restored"].iter().flat_map(|k| v[*k].as_array().into_iter().flatten().filter_map(Value::as_u64)));
             if task.first.is_none() {
-                task.first = ["imported", "restored"].iter().find_map(|k| v[*k].as_array().and_then(|a| a.first()).and_then(Value::as_u64));
+                task.first = task.ids.first().copied();
             }
         }
         Err(e) => {
@@ -709,6 +712,16 @@ fn commit_batch(app: &mut LightcraftApp, task: &mut ImportTask, prepared: lightc
 
 /// The import is done (or cancelled): one undo step, select the first photo, say what happened.
 fn finish(app: &mut LightcraftApp, ctx: &egui::Context, task: ImportTask) {
+    // the focus brackets among the new photos become stacks (Settings → Import), in the import's
+    // undo step; over the whole import at once, as a bracket can span batches
+    let brackets = if !task.browse && app.session.import_defaults.stack_focus_brackets {
+        lightcraft_engine::cmd::library::stack_focus_brackets(&mut app.session, &task.ids).unwrap_or_else(|e| {
+            log::warn!("import: stacking focus brackets: {e}");
+            0
+        })
+    } else {
+        0
+    };
     let steps = app.session.undo.len().saturating_sub(task.undo0);
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     let label = if task.imported == 0 && task.restored > 0 {
@@ -719,6 +732,10 @@ fn finish(app: &mut LightcraftApp, ctx: &egui::Context, task: ImportTask) {
         crate::i18n::tr_format!("Add {} Photo{}", task.imported, if task.imported == 1 { "" } else { "s" })
     };
     app.session.merge_undo(steps, &label);
+    if brackets > 0 {
+        // a selected photo stacked into a bracket: its stack's cell
+        app.session.keep_active_visible();
+    }
     if task.auto {
         if task.imported > 0 {
             app.toast(ctx, crate::i18n::tr_format!("Auto Import: added {} photo{}", task.imported, if task.imported == 1 { "" } else { "s" }));
@@ -733,6 +750,7 @@ fn finish(app: &mut LightcraftApp, ctx: &egui::Context, task: ImportTask) {
     }
     if let Some(f) = task.first {
         let _ = app.run("library.select", json!({"ids": [f]}));
+        app.session.keep_active_visible();
     }
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     // nothing new, only files the library already has: show where they are (Recently Deleted is
@@ -747,6 +765,9 @@ fn finish(app: &mut LightcraftApp, ctx: &egui::Context, task: ImportTask) {
     };
     if task.restored > 0 {
         msg.push_str(&crate::i18n::tr_format!(" · {} restored from Recently Deleted", task.restored));
+    }
+    if brackets > 0 {
+        msg.push_str(&crate::i18n::tr_format!(" · {} focus bracket{} stacked", brackets, plural(brackets as usize)));
     }
     if task.params["mode"] == "move" {
         msg.push_str(&crate::i18n::tr_format!(" · {} moved", task.moved));
@@ -1166,6 +1187,13 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
         let r = ui.add(egui::TextEdit::singleline(&mut d.keywords).hint_text(crate::i18n::tr("comma, separated")).desired_width(f32::INFINITY));
         register(ui.ctx(), "field:importKeywords", r.rect);
     });
+    // the library preference (Settings → Import), set from here too
+    let mut stack = app.session.import_defaults.stack_focus_brackets;
+    let r = ui.checkbox(&mut stack, crate::i18n::tr("Stack focus brackets"));
+    register(ui.ctx(), "check:importStackBrackets", r.rect);
+    if r.on_hover_text(crate::i18n::tr("Each focus bracket becomes a collapsed stack: adjust it and focus-stack it as one")).changed() {
+        let _ = app.run("library.preferences", json!({"import": {"stackFocusBrackets": stack}}));
+    }
 }
 
 fn candidate_cell(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &mut ImportDialog, i: usize, rect: Rect) {

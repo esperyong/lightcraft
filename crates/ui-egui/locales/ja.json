@@ -1793,5 +1793,9 @@
   "Focus stack retouched": "深度合成をレタッチしました",
   "Erases strokes underneath: the stack as merged.": "下のストロークを消します：合成どおりの状態に戻します。",
   "The stack redone with that method (the first stroke takes a moment).": "その方式で合成し直した結果（最初のストロークは少し時間がかかります）。",
-  "One photo of the bracket, aligned to the stack.": "ブラケットの1枚（合成に位置合わせ済み）。"
+  "One photo of the bracket, aligned to the stack.": "ブラケットの1枚（合成に位置合わせ済み）。",
+  "Stack focus brackets": "フォーカスブラケットをスタック",
+  "Each focus bracket becomes a collapsed stack: adjust it and focus-stack it as one": "フォーカスブラケットごとに折りたたんだスタックにします。まとめて調整し、まとめて深度合成できます",
+  "Stack focus brackets on import": "読み込み時にフォーカスブラケットをスタック",
+  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "同じカメラ・レンズ・露出で 2 秒以内に続けて撮った写真を、折りたたんだ 1 つのスタックにします。まとめて調整し、まとめて深度合成できます。"
 }

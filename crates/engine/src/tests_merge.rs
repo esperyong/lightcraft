@@ -397,6 +397,47 @@ fn lens_corrections_carry_into_hdr_and_focus_results() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Issue #24: with the library preference on, an import stacks the focus brackets it brings in
+/// (one undo step with the import).
+#[test]
+fn an_import_stacks_its_focus_brackets_when_asked() {
+    use lightcraft_catalog::StackKind;
+    let dir = temp_dir("import-stack");
+    let mut paths = Vec::new();
+    for (b, start) in [(0, 0), (1, 30)] {
+        for (i, d) in lightcraft_merge::synth::focus_bracket_dngs(120, 80, 3, start).unwrap().into_iter().enumerate() {
+            let p = dir.join(format!("I{b}_{i}.dng"));
+            std::fs::write(&p, d).unwrap();
+            paths.push(p.to_string_lossy().to_string());
+        }
+    }
+    let mut s = Session::new().with_fs();
+    let r = s.execute("library.preferences", &json!({"import": {"stackFocusBrackets": true}})).unwrap();
+    assert_eq!(r["import"]["stackFocusBrackets"], true);
+    let r = s.execute("library.import", &json!({"paths": paths})).unwrap();
+    assert_eq!(r["focusBrackets"], 2, "{r}");
+    assert_eq!(s.catalog.stacks().filter(|st| st.kind == StackKind::FocusBracket && st.collapsed).count(), 2);
+    assert_eq!(s.visible_cloned().len(), 2);
+    // the selected first photo is its stack's cell
+    assert!(s.selection.active.is_some_and(|a| s.visible_cloned().contains(&a)));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!((s.catalog.photos().count(), s.catalog.stacks().count()), (0, 0), "one undo step");
+    // asked not to
+    s.execute("edit.redo", &json!({})).unwrap();
+    let more = dir.join("more");
+    std::fs::create_dir_all(&more).unwrap();
+    let mut p2 = Vec::new();
+    for (i, d) in lightcraft_merge::synth::focus_bracket_dngs(120, 80, 3, 90).unwrap().into_iter().enumerate() {
+        let p = more.join(format!("M{i}.dng"));
+        std::fs::write(&p, d).unwrap();
+        p2.push(p.to_string_lossy().to_string());
+    }
+    let r = s.execute("library.import", &json!({"paths": p2, "stackFocusBrackets": false})).unwrap();
+    assert!(r.get("focusBrackets").is_none(), "{r}");
+    assert_eq!(s.catalog.stacks().count(), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_focus_stack_is_retouched_from_a_frame_and_back() {
     let dir = temp_dir("focus-retouch");

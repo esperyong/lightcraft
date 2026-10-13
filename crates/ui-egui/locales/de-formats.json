@@ -209,5 +209,6 @@
   "•  {assumption}": "•  {assumption}",
   "Analyzed {} photos": "{} Fotos analysiert",
   "Analyzed {} photos ({} could not be analyzed)": "{} Fotos analysiert ({} konnten nicht analysiert werden)",
-  "Analyzing photos: {done} of {total}": "Fotos werden analysiert: {done} von {total}"
+  "Analyzing photos: {done} of {total}": "Fotos werden analysiert: {done} von {total}",
+  " · {} focus bracket{} stacked": " · {0} Fokusreihe(n) gestapelt{1:.0}"
 }

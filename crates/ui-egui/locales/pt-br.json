@@ -1781,5 +1781,9 @@
   "Focus stack retouched": "Empilhamento de foco retocado",
   "Erases strokes underneath: the stack as merged.": "Apaga os traços por baixo: o empilhamento como mesclado.",
   "The stack redone with that method (the first stroke takes a moment).": "O empilhamento refeito com esse método (o primeiro traço leva um momento).",
-  "One photo of the bracket, aligned to the stack.": "Uma foto do bracketing, alinhada ao empilhamento."
+  "One photo of the bracket, aligned to the stack.": "Uma foto do bracketing, alinhada ao empilhamento.",
+  "Stack focus brackets": "Empilhar séries de foco",
+  "Each focus bracket becomes a collapsed stack: adjust it and focus-stack it as one": "Cada série de foco vira uma pilha recolhida: ajuste e empilhe o foco como uma só",
+  "Stack focus brackets on import": "Empilhar séries de foco ao importar",
+  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "Fotos tiradas com até 2 s de diferença com a mesma câmera, lente e exposição viram uma pilha recolhida, pronta para ajustar e empilhar o foco como uma só."
 }

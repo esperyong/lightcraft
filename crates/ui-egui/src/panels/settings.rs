@@ -311,6 +311,18 @@ fn import_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
             }
         });
     }
+    heading(ui, t, crate::i18n::tr("Stacks"));
+    let mut stack = d.stack_focus_brackets;
+    if check(ui, "settings.stackFocusBrackets", &mut stack, "Stack focus brackets on import") {
+        let _ = app.run("library.preferences", json!({"import": {"stackFocusBrackets": stack}}));
+    }
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.",
+        ),
+    );
     heading(ui, t, crate::i18n::tr("XMP sidecars"));
     let mut xmp = app.session.xmp;
     if check(ui, "settings.autoWriteXmp", &mut xmp.auto_write, "Automatically write changes into XMP sidecars") {

@@ -209,5 +209,6 @@
   "•  {assumption}": "•  {assumption}",
   "Analyzed {} photos": "已分析 {} 張照片",
   "Analyzed {} photos ({} could not be analyzed)": "已分析 {} 張照片（{} 張無法分析）",
-  "Analyzing photos: {done} of {total}": "正在分析照片：{done}／{total}"
+  "Analyzing photos: {done} of {total}": "正在分析照片：{done}／{total}",
+  " · {} focus bracket{} stacked": " · 已將 {0} 組對焦包圍堆疊{1:.0}"
 }

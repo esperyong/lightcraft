@@ -1936,5 +1936,9 @@
   "Focus stack retouched": "Fokus-Stack retuschiert",
   "Erases strokes underneath: the stack as merged.": "Löscht darunterliegende Striche: der Stack wie zusammengefügt.",
   "The stack redone with that method (the first stroke takes a moment).": "Der Stack mit dieser Methode neu berechnet (der erste Strich dauert einen Moment).",
-  "One photo of the bracket, aligned to the stack.": "Ein Foto der Reihe, am Stack ausgerichtet."
+  "One photo of the bracket, aligned to the stack.": "Ein Foto der Reihe, am Stack ausgerichtet.",
+  "Stack focus brackets": "Fokusreihen stapeln",
+  "Each focus bracket becomes a collapsed stack: adjust it and focus-stack it as one": "Jede Fokusreihe wird ein zugeklappter Stapel: als Ganzes bearbeiten und Fokus-stapeln",
+  "Stack focus brackets on import": "Fokusreihen beim Import stapeln",
+  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "Fotos, die innerhalb von 2 s mit derselben Kamera, demselben Objektiv und derselben Belichtung aufgenommen wurden, werden ein zugeklappter Stapel – bereit, als Ganzes bearbeitet und Fokus-gestapelt zu werden."
 }

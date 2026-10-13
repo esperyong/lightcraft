@@ -1798,5 +1798,9 @@
   "Focus stack retouched": "景深合成已修补",
   "Erases strokes underneath: the stack as merged.": "擦除下面的笔触：恢复为合成原样。",
   "The stack redone with that method (the first stroke takes a moment).": "用该方法重新合成的结果（第一笔需要稍等片刻）。",
-  "One photo of the bracket, aligned to the stack.": "包围中的一张照片，已与合成结果对齐。"
+  "One photo of the bracket, aligned to the stack.": "包围中的一张照片，已与合成结果对齐。",
+  "Stack focus brackets": "堆叠对焦包围",
+  "Each focus bracket becomes a collapsed stack: adjust it and focus-stack it as one": "每组对焦包围成为一个折叠的堆叠：可以整组调整、整组景深合成",
+  "Stack focus brackets on import": "导入时堆叠对焦包围",
+  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "用同一相机、镜头和曝光、相隔不超过 2 秒拍下的照片会成为一个折叠的堆叠，可以整组调整、整组景深合成。"
 }

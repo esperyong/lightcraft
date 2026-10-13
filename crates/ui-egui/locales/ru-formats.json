@@ -209,5 +209,6 @@
   "•  {assumption}": "•  {assumption}",
   "Analyzed {} photos": "Проанализировано фото: {}",
   "Analyzed {} photos ({} could not be analyzed)": "Проанализировано фото: {} (не удалось: {})",
-  "Analyzing photos: {done} of {total}": "Анализ фото: {done} из {total}"
+  "Analyzing photos: {done} of {total}": "Анализ фото: {done} из {total}",
+  " · {} focus bracket{} stacked": " · серий фокуса собрано в стопки: {0}{1:.0}"
 }

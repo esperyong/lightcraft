@@ -209,5 +209,6 @@
   "•  {assumption}": "•  {assumption}",
   "Analyzed {} photos": "{} fotos analizadas",
   "Analyzed {} photos ({} could not be analyzed)": "{} fotos analizadas ({} no se pudieron analizar)",
-  "Analyzing photos: {done} of {total}": "Analizando fotos: {done} de {total}"
+  "Analyzing photos: {done} of {total}": "Analizando fotos: {done} de {total}",
+  " · {} focus bracket{} stacked": " · {0} serie(s) de enfoque apilada(s){1:.0}"
 }

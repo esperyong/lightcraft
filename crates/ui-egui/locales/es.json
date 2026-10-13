@@ -1781,5 +1781,9 @@
   "Focus stack retouched": "Apilado de enfoque retocado",
   "Erases strokes underneath: the stack as merged.": "Borra los trazos de debajo: el apilado tal como se combinó.",
   "The stack redone with that method (the first stroke takes a moment).": "El apilado rehecho con ese método (el primer trazo tarda un momento).",
-  "One photo of the bracket, aligned to the stack.": "Una foto del horquillado, alineada con el apilado."
+  "One photo of the bracket, aligned to the stack.": "Una foto del horquillado, alineada con el apilado.",
+  "Stack focus brackets": "Apilar series de enfoque",
+  "Each focus bracket becomes a collapsed stack: adjust it and focus-stack it as one": "Cada serie de enfoque se convierte en una pila contraída: ajústala y apílala por enfoque como una sola",
+  "Stack focus brackets on import": "Apilar series de enfoque al importar",
+  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "Las fotos tomadas con menos de 2 s de diferencia con la misma cámara, objetivo y exposición forman una pila contraída, lista para ajustarla y apilarla por enfoque como una sola."
 }

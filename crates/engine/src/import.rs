@@ -256,6 +256,9 @@ pub struct ImportDefaults {
     pub auto_folder: Option<String>,
     pub auto_copy: bool,
     pub auto_album: Option<String>,
+    /// Make each focus bracket among the imported photos a collapsed stack
+    /// (`merge.detectFocusBrackets`), ready to adjust and focus-stack as one.
+    pub stack_focus_brackets: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

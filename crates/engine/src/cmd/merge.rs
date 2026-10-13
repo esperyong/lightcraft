@@ -174,7 +174,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "HDR Merge",
             [],
             None,
-            "{ids? (default: the selection, a collapsed stack standing for its photos; two or more collapsed stacks are merged one by one → {results, failed, count, perStack}), expandStacks=false (explicit ids: take a collapsed stack's photos too), align=true, deghost=none|low|medium|high, autoSettings=true, stack (default: when the photos are one stack, the result goes on its top), preview=false, showOverlay=false, previewPath?}",
+            "{ids? (default: the selection, a collapsed stack standing for its photos; two or more collapsed stacks are merged one by one → {results, failed, count, perStack}), expandStacks=false (explicit ids: take a collapsed stack's photos too), align=true, deghost=none|low|medium|high, autoSettings (default: on unless the result takes edited sources' settings), sourceSettings=true (when the photos were edited, the result starts from the reference photo's settings: white balance, tone, colour, detail, lens corrections, profile — not crop, geometry, masks, spots, lens blur or AI enhance), stack (default: when the photos are one stack, the result goes on its top), preview=false, showOverlay=false, previewPath?}",
             can_merge,
             |s, p| run(s, "merge.hdr", p)
         ),
@@ -183,7 +183,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Panorama Merge",
             [],
             None,
-            "{ids? (default: the selection, a collapsed stack standing for its photos), expandStacks=false, projection=auto|spherical|cylindrical|perspective, boundaryWarp=0..100, autoCrop=false, fillEdges=false, autoSettings=true, stack (default: when the photos are one stack), maxMegapixels=40, preview=false, previewPath?}",
+            "{ids? (default: the selection, a collapsed stack standing for its photos), expandStacks=false, projection=auto|spherical|cylindrical|perspective, boundaryWarp=0..100, autoCrop=false, fillEdges=false, autoSettings (default: on unless the result takes edited sources' settings), sourceSettings=true (lens geometry and vignetting stay the panorama's own), stack (default: when the photos are one stack), maxMegapixels=40, preview=false, previewPath?}",
             can_merge,
             |s, p| run(s, "merge.panorama", p)
         ),
@@ -192,7 +192,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "HDR Panorama Merge",
             [],
             None,
-            "{ids? (default: the selection, collapsed stacks standing for their photos), expandStacks=false, bracket=0 (auto from EXIF), align, deghost, projection, boundaryWarp, autoCrop, fillEdges, autoSettings, stack (default: when the photos are one stack), preview, previewPath?}",
+            "{ids? (default: the selection, collapsed stacks standing for their photos), expandStacks=false, bracket=0 (auto from EXIF), align, deghost, projection, boundaryWarp, autoCrop, fillEdges, autoSettings (default: on unless the result takes edited sources' settings), sourceSettings=true, stack (default: when the photos are one stack), preview, previewPath?}",
             can_merge,
             |s, p| run(s, "merge.hdrPanorama", p)
         ),
@@ -201,7 +201,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Focus Stack",
             [],
             None,
-            "{ids? (default: the selection, a collapsed stack standing for its photos — merge results, virtual copies and videos left out; two or more collapsed stacks are stacked one by one → {results, failed, count, perStack}), expandStacks=false (explicit ids: take a collapsed stack's photos too), method=depth|average|pyramid (a|b|c; depth), radius=1..30 (8), smoothing=0..10 (4), align=true, alignShift, alignRotation, alignScale, alignBrightness (default: align), order=capture|selection|reverse|auto, every=1 (every n-th photo, first and last always; previews ~12 photos), reference=middle|first|sharpest, crop=common|reference, maxMegapixels=0 (no limit), depthMap=true (embed the depth map in the DNG for Depth Range masks), depthPath? (also as a 16-bit PNG), autoSettings=true, stack (default: when the photos are one stack, e.g. a focus bracket, the result goes on its top), preview=false, showDepth=false, previewPath?}",
+            "{ids? (default: the selection, a collapsed stack standing for its photos — merge results, virtual copies and videos left out; two or more collapsed stacks are stacked one by one → {results, failed, count, perStack}), expandStacks=false (explicit ids: take a collapsed stack's photos too), method=depth|average|pyramid (a|b|c; depth), radius=1..30 (8), smoothing=0..10 (4), align=true, alignShift, alignRotation, alignScale, alignBrightness (default: align), order=capture|selection|reverse|auto, every=1 (every n-th photo, first and last always; previews ~12 photos), reference=middle|first|sharpest, crop=common|reference, maxMegapixels=0 (no limit), depthMap=true (embed the depth map in the DNG for Depth Range masks), depthPath? (also as a 16-bit PNG), autoSettings (default: on unless the result takes edited sources' settings), sourceSettings=true (when the photos were edited, the result starts from the reference photo's settings: white balance, tone, colour, detail, lens corrections, profile — not crop, geometry, masks, spots, lens blur or AI enhance), stack (default: when the photos are one stack, e.g. a focus bracket, the result goes on its top), preview=false, showDepth=false, previewPath?}",
             can_merge,
             |s, p| run(s, "merge.focusStack", p)
         ),

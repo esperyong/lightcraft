@@ -163,6 +163,20 @@ pub fn bradford(src: Xy, dst: Xy) -> Mat3 {
     inv.mul(&Mat3::diag(d[0] / s[0], d[1] / s[1], d[2] / s[2])).mul(&BRADFORD)
 }
 
+/// The white that makes, adapted from `to_shot`, the same correction as `set` makes adapted from
+/// `shot` (Bradford, as [`cct::wb_matrix`] adapts): its cone response is
+/// LMS(to_shot) · LMS(set) / LMS(shot). Carries a white balance relative to one photo's as-shot
+/// white over to another's (e.g. a merge result's). `None` for degenerate whites.
+pub fn transfer_white(shot: Xy, set: Xy, to_shot: Xy) -> Option<Xy> {
+    let (a, b, c) = (BRADFORD.apply(shot.to_xyz()), BRADFORD.apply(set.to_xyz()), BRADFORD.apply(to_shot.to_xyz()));
+    if a.iter().any(|v| !v.is_finite() || v.abs() < 1e-9) {
+        return None;
+    }
+    let lms = [c[0] * b[0] / a[0], c[1] * b[1] / a[1], c[2] * b[2] / a[2]];
+    let p = Xy::from_xyz(BRADFORD.inverse()?.apply(lms));
+    (p.x.is_finite() && p.y.is_finite() && p.x > 0.0 && p.y > 0.0).then_some(p)
+}
+
 /// Rec.2020 luminance weights as f32 (hot path).
 pub const LUMA_2020: [f32; 3] = [0.2627, 0.6780, 0.0593];
 /// Rec.709 / sRGB luminance weights.
@@ -194,6 +208,32 @@ impl Rgb8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The relative correction (shot → set) and the transferred one (to_shot → result) are the same
+    /// matrix, up to the scale white balance normalises away.
+    #[test]
+    fn transferred_white_makes_the_same_correction() {
+        use cct::{temp_tint_to_xy as xy, wb_matrix};
+        let rel = |from: Xy, to: Xy| {
+            let m = wb_matrix(&REC2020, to).mul(&wb_matrix(&REC2020, from).inverse().unwrap());
+            let k = m.apply([1.0, 1.0, 1.0])[1];
+            m.0.map(|r| r.map(|v| v / k))
+        };
+        for (shot, set, to) in [((6500.0, 0.0), (4800.0, 12.0), (5200.0, 3.0)), ((6500.0, 0.0), (9000.0, -20.0), (3400.0, 8.0))] {
+            let p = transfer_white(xy(shot.0, shot.1), xy(set.0, set.1), xy(to.0, to.1)).unwrap();
+            let (a, b) = (rel(xy(shot.0, shot.1), xy(set.0, set.1)), rel(xy(to.0, to.1), p));
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert!((a[i][j] - b[i][j]).abs() < 1e-9, "{shot:?} {set:?} {to:?}: {a:?} vs {b:?}");
+                }
+            }
+        }
+        // no change stays no change
+        let p = transfer_white(xy(6500.0, 0.0), xy(6500.0, 0.0), xy(5000.0, 5.0)).unwrap();
+        let (t, tint) = cct::xy_to_temp_tint(p);
+        assert!((t - 5000.0).abs() < 1.0 && (tint - 5.0).abs() < 0.1, "{t} {tint}");
+        assert!(transfer_white(Xy::new(0.3, 0.0), D65, D65).is_none(), "degenerate");
+    }
 
     #[test]
     fn srgb_matrix_matches_standard() {

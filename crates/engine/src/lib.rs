@@ -47,6 +47,7 @@ pub mod logging;
 pub mod media;
 pub mod memory;
 pub mod merge;
+pub mod merge_look;
 mod model_download;
 pub mod originals;
 pub mod preset_import;

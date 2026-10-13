@@ -376,7 +376,7 @@ impl Retouch {
         let mut img = (*self.src.base).clone();
         composite(&mut img, strokes, |s| self.src.get(s))?;
         let f = &self.base_frame;
-        let extra = lightcraft_merge::DngExtra { masks: Vec::new(), private_data: self.private_data.clone() };
+        let extra = lightcraft_merge::DngExtra { masks: Vec::new(), private_data: self.private_data.clone(), unique_id: None };
         let dng = lightcraft_merge::write_linear_dng_with(
             &img,
             &f.color,
@@ -439,6 +439,7 @@ impl RetouchJob {
         let extra = lightcraft_merge::DngExtra {
             masks: lightcraft_raw::semantic_masks(&self.base_bytes),
             private_data: crate::camera_preview::private_data_of(&self.base_bytes),
+            unique_id: None,
         };
         let dng = lightcraft_merge::write_linear_dng_with(
             &img,

@@ -254,15 +254,76 @@ fn a_selected_collapsed_bracket_is_merged_whole_with_the_result_on_top() {
     assert_eq!(pv["stacks"], 2, "{pv}");
     // nothing selected: Focus Stack Each Bracket finds the collapsed brackets
     s.execute("library.selectNone", &json!({})).unwrap();
-    let (photos, files) = (s.catalog.photos().count(), std::fs::read_dir(&dir).unwrap().count());
+    let photos = s.catalog.photos().count();
     let r = s.execute("merge.focusStackBatch", &json!({"method": "a", "autoSettings": false})).unwrap();
     assert_eq!((r["count"].as_u64(), r["failed"].as_array().map(Vec::len)), (Some(2), Some(0)), "{r}");
     assert!(r["results"].as_array().unwrap().iter().all(|v| v["used"] == 4), "{r}");
-    // the same merges as before (same frames, same method): the earlier results stand for them
-    assert!(r["results"].as_array().unwrap().iter().all(|v| v["sameAs"].is_u64()), "{r}");
-    assert_eq!((s.catalog.photos().count(), std::fs::read_dir(&dir).unwrap().count()), (photos, files), "no copies left behind");
+    // the same merges as before (same frames, same method) are new photos all the same: their DNGs
+    // are their own (RawDataUniqueID), not duplicates the import would skip
+    assert_eq!(s.catalog.photos().count(), photos + 2);
     let info = s.execute("photo.inspect", &json!({"id": ids[4].0})).unwrap();
     assert_eq!(info["stack"]["kind"], "focusBracket");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #24: adjust the bracket, then merge — the result takes the reference photo's look (white
+/// balance, tone, detail), not its crop, masks or AI denoise, and no Auto Settings on top.
+#[test]
+fn a_merge_takes_the_settings_of_its_edited_sources() {
+    use lightcraft_catalog::PhotoId;
+    use lightcraft_develop::WbMode;
+    let dir = temp_dir("focus-look");
+    let mut paths = Vec::new();
+    for (b, start) in [(0, 0), (1, 30)] {
+        for (i, d) in lightcraft_merge::synth::focus_bracket_dngs(240, 160, 4, start).unwrap().into_iter().enumerate() {
+            let p = dir.join(format!("L{b}_{i}.dng"));
+            std::fs::write(&p, d).unwrap();
+            paths.push(p.to_string_lossy().to_string());
+        }
+    }
+    let mut s = Session::new().with_fs();
+    let all = import(&mut s, paths);
+    let (ids, other) = (all[0..4].to_vec(), all[4..8].to_vec());
+    // adjust one frame and sync it to the bracket; the reference (the middle frame) also gets a
+    // crop and a mask
+    s.execute("library.select", &json!({"ids": ids, "active": ids[0]})).unwrap();
+    s.execute("develop.wb", &json!({"mode": "custom", "temp": 4800, "tint": 12})).unwrap();
+    s.execute("develop.set", &json!({"values": {"light.exposure": 0.7, "light.contrast": 15, "enhance.denoise": 50}})).unwrap();
+    s.execute("develop.sync", &json!({})).unwrap();
+    s.execute("library.select", &json!({"ids": [ids[2]]})).unwrap();
+    s.execute("crop.set", &json!({"rect": [0.1, 0.1, 0.9, 0.9]})).unwrap();
+    s.execute("mask.add", &json!({"kind": "radial"})).unwrap();
+    let src = s.develop_of(PhotoId(ids[2])).unwrap();
+    assert_eq!((src.wb.temp, src.light.exposure, src.masks.len()), (4800.0, 0.7, 1));
+    let r = s.execute("merge.focusStack", &json!({"ids": ids, "method": "a"})).unwrap();
+    assert_eq!(r["settingsFrom"], ids[2], "the reference frame: {r}");
+    let res = PhotoId(r["id"].as_u64().unwrap());
+    let d = s.develop_of(res).unwrap();
+    assert_eq!((d.wb.mode, d.wb.temp, d.wb.tint), (WbMode::Custom, 4800.0, 12.0), "absolute white balance copied");
+    assert_eq!((d.light.exposure, d.light.contrast), (0.7, 15.0), "no Auto Settings over them");
+    assert_eq!(d.crop, Default::default());
+    assert!(d.masks.is_empty());
+    assert_eq!(d.enhance, Default::default(), "no AI denoise on the merged DNG");
+    assert_eq!(s.catalog.photo(res).unwrap().history.last().map(|h| h.label.as_str()), Some("Settings from Sources"));
+    // it renders like a source with the same settings (another frame: same scene, no crop)
+    let mean = |s: &mut Session, id: u64| {
+        let img = s.render_now(PhotoId(id), 96, 96).unwrap().image;
+        let n = img.data.len() as f64;
+        [0, 1, 2].map(|c| img.data.iter().map(|p| p[c] as f64).sum::<f64>() / n)
+    };
+    let (a, b) = (mean(&mut s, ids[1]), mean(&mut s, res.0));
+    assert!((0..3).all(|c| (a[c] - b[c]).abs() < 6.0), "source {a:?} vs result {b:?}");
+    // asked not to: as-shot white balance and Auto Settings, as before
+    let r = s.execute("merge.focusStack", &json!({"ids": ids, "method": "c", "sourceSettings": false})).unwrap();
+    assert!(r.get("settingsFrom").is_none());
+    let d = s.develop_of(PhotoId(r["id"].as_u64().unwrap())).unwrap();
+    assert_eq!(d.wb.mode, WbMode::AsShot);
+    assert!(d.light.exposure != 0.7 && d.light.exposure != 0.0, "Auto Settings: {:?}", d.light);
+    // unedited sources: as before
+    let r = s.execute("merge.focusStack", &json!({"ids": other, "method": "a"})).unwrap();
+    assert!(r.get("settingsFrom").is_none());
+    let d = s.develop_of(PhotoId(r["id"].as_u64().unwrap())).unwrap();
+    assert_eq!(d.wb.mode, WbMode::AsShot);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -356,6 +417,21 @@ fn a_merge_of_vendor_raws_keeps_their_colours() {
     let merged = mean(&mut s, id);
     for c in 0..3 {
         assert!((src[c] - merged[c]).abs() < 3.0, "source {src:?}, merged {merged:?}");
+    }
+    // #24: adjusted first (an ARW's white balance is relative to its as-shot white, the merged
+    // DNG's absolute), the result takes the adjustment and still looks like its source
+    s.execute("library.select", &json!({"ids": ids, "active": ids[0]})).unwrap();
+    s.execute("develop.wb", &json!({"mode": "custom", "temp": 4300, "tint": 15})).unwrap();
+    s.execute("develop.set", &json!({"values": {"light.exposure": 0.4}})).unwrap();
+    s.execute("develop.sync", &json!({})).unwrap();
+    let r = s.execute("merge.focusStack", &json!({"ids": ids, "method": "a", "maxMegapixels": 1.5})).unwrap();
+    let id = lightcraft_catalog::PhotoId(r["id"].as_u64().unwrap());
+    let d = s.develop_of(id).unwrap();
+    assert_eq!((d.wb.mode, d.light.exposure), (lightcraft_develop::WbMode::Custom, 0.4), "{:?}", d.wb);
+    let src = mean(&mut s, lightcraft_catalog::PhotoId(ids[0]));
+    let merged = mean(&mut s, id);
+    for c in 0..3 {
+        assert!((src[c] - merged[c]).abs() < 3.0, "adjusted: source {src:?}, merged {merged:?} ({:?})", d.wb);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

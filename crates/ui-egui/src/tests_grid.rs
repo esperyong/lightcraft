@@ -31,7 +31,8 @@ fn library() -> Session {
     }
     for k in 0..N / 100 {
         let b = k * 100 + 1;
-        let stack = Stack { id: StackId(k + 1), photos: vec![PhotoId(b), PhotoId(b + 1), PhotoId(b + 2)], collapsed: false };
+        let stack =
+            Stack { id: StackId(k + 1), photos: vec![PhotoId(b), PhotoId(b + 1), PhotoId(b + 2)], collapsed: false, kind: Default::default() };
         s.catalog.apply(Op::AddStack { stack }).unwrap();
     }
     s

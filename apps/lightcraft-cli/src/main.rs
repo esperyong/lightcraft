@@ -81,7 +81,10 @@ USAGE:
       first file (focus: the first in focus order) and prints the result as JSON. Options:
         --deghost none|low|medium|high   --no-align   --bracket N (HDR panorama)
         --projection auto|spherical|cylindrical|perspective   --boundary-warp 0..100
-        --auto-crop   --fill-edges   --no-auto-settings   --stack
+        --auto-crop   --fill-edges   --stack
+        --auto-settings / --no-auto-settings   (default: on, unless the files carry edits in XMP
+          sidecars: the result then starts from the reference photo's settings)
+        --no-source-settings   don't take the files' edits (white balance, tone, detail, lens…)
         focus stack: --method a|b|c (average | depth map, the default | pyramid)
           --radius 1..30 (8)   --smoothing 0..10 (4)   --order capture|selection|reverse|auto
           --every N   --max-megapixels MP   --depth OUT.png (16-bit depth map)
@@ -387,6 +390,12 @@ fn merge(args: &[String]) -> Result<(), String> {
             }
             "--no-auto-settings" => {
                 p.insert("autoSettings".into(), json!(false));
+            }
+            "--auto-settings" => {
+                p.insert("autoSettings".into(), json!(true));
+            }
+            "--no-source-settings" => {
+                p.insert("sourceSettings".into(), json!(false));
             }
             "--stack" => {
                 p.insert("stack".into(), json!(true));

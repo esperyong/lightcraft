@@ -134,7 +134,7 @@ fn any_user_change_keeps_a_record() {
             Box::new(|c, id| {
                 let other = local(c, "elsewhere", 99);
                 let s = c.alloc_stack_id();
-                drop(c.apply(Op::AddStack { stack: Stack { id: s, photos: vec![id, other], collapsed: false } }).unwrap())
+                drop(c.apply(Op::AddStack { stack: Stack { id: s, photos: vec![id, other], collapsed: false, kind: StackKind::Plain } }).unwrap())
             }),
         ),
         (

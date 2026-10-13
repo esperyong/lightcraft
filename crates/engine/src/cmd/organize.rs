@@ -39,14 +39,7 @@ fn commit_ops(s: &mut Session, label: &str, ops: Vec<Op>) -> Result<usize> {
 
 /// After collapsing, keep the active photo visible (move it to its stack's top).
 fn fix_active(s: &mut Session) {
-    let vis = s.visible_cloned();
-    if let Some(a) = s.selection.active
-        && !vis.contains(&a)
-        && let Some(st) = s.catalog.stack_of(a)
-    {
-        let top = vis.iter().copied().find(|p| st.photos.contains(p)).unwrap_or(st.top());
-        s.selection = Selection::single(top);
-    }
+    s.keep_active_visible();
 }
 
 fn set_collapsed(s: &mut Session, stacks: Vec<StackId>, collapsed: bool, label: &str) -> Result<Value> {
@@ -94,7 +87,7 @@ fn virtual_copy(s: &mut Session, src: PhotoId, name: Option<&str>) -> Result<Opt
         }
         None => {
             let sid = s.catalog.alloc_stack_id();
-            ops.push(Op::AddStack { stack: Stack { id: sid, photos: vec![src, id], collapsed: false } });
+            ops.push(Op::AddStack { stack: Stack { id: sid, photos: vec![src, id], collapsed: false, kind: lightcraft_catalog::StackKind::Plain } });
         }
     }
     s.commit("Create Virtual Copy", Op::Batch { ops })?;

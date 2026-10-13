@@ -55,8 +55,8 @@ fn hdr_merge_command_creates_and_imports_a_dng() {
     assert_eq!(st.photos[1..].iter().map(|p| p.0).collect::<Vec<_>>(), ids);
     assert!(st.collapsed);
     assert_eq!(s.visible_cloned(), vec![id]);
-    // the second merge doesn't overwrite the first
-    let r2 = s.execute("merge.hdr", &json!({"ids": ids, "autoSettings": false})).unwrap();
+    // the second merge doesn't overwrite the first (its sources are one stack now: asked not to stack)
+    let r2 = s.execute("merge.hdr", &json!({"ids": ids, "autoSettings": false, "stack": false})).unwrap();
     assert!(r2["path"].as_str().unwrap().ends_with("IMG_0-HDR-2.dng"));
     let id2 = lightcraft_catalog::PhotoId(r2["id"].as_u64().unwrap());
     assert!(s.catalog.stack_of(id2).is_none(), "no stack without the option");
@@ -186,6 +186,258 @@ fn focus_brackets_are_detected_and_stacked_in_a_batch() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Issue #24: brackets become collapsed focus-bracket stacks; one selected stack is merged whole and
+/// takes the result on top; several selected stacks are merged one by one.
+#[test]
+fn a_selected_collapsed_bracket_is_merged_whole_with_the_result_on_top() {
+    use lightcraft_catalog::{PhotoId, StackKind};
+    let dir = temp_dir("focus-stacks");
+    let mut paths = Vec::new();
+    for (b, start) in [(0, 0), (1, 30)] {
+        for (i, d) in lightcraft_merge::synth::focus_bracket_dngs(240, 160, 4, start).unwrap().into_iter().enumerate() {
+            let p = dir.join(format!("S{b}_{i}.dng"));
+            std::fs::write(&p, d).unwrap();
+            paths.push(p.to_string_lossy().to_string());
+        }
+    }
+    let mut s = Session::new().with_fs();
+    let ids: Vec<PhotoId> = import(&mut s, paths).into_iter().map(PhotoId).collect();
+    // a stack by capture time holding both brackets, collapsed
+    s.execute("library.selectNone", &json!({})).unwrap();
+    s.execute("stack.auto", &json!({"gap": 100})).unwrap();
+    assert_eq!(s.visible_cloned().len(), 1);
+    // nothing selected: the brackets are found inside it and become stacks of their own
+    let r = s.execute("merge.detectFocusBrackets", &json!({"stack": true})).unwrap();
+    assert_eq!((r["count"].as_u64(), r["stacked"].as_u64(), r["photos"].as_u64()), (Some(2), Some(2), Some(8)), "{r}");
+    let (b0, b1) = (s.catalog.stack_of(ids[0]).unwrap().clone(), s.catalog.stack_of(ids[4]).unwrap().clone());
+    assert_eq!((b0.photos.clone(), b0.kind, b0.collapsed), (ids[0..4].to_vec(), StackKind::FocusBracket, true));
+    assert_eq!(b1.photos, ids[4..8].to_vec());
+    let shown = |s: &mut Session| {
+        let mut v = s.visible_cloned();
+        v.sort();
+        v
+    };
+    assert_eq!(shown(&mut s), vec![ids[0], ids[4]]);
+    // again: nothing new; one undo brings the time stack back
+    let r = s.execute("merge.detectFocusBrackets", &json!({"stack": true})).unwrap();
+    assert_eq!((r["stacked"].as_u64(), r["unchanged"].as_u64()), (Some(0), Some(2)), "{r}");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.catalog.stack_of(ids[0]).map(|st| st.photos.len()), Some(8));
+    s.execute("edit.redo", &json!({})).unwrap();
+    assert_eq!(s.catalog.stack_of(ids[0]).map(|st| st.photos.len()), Some(4));
+    // one collapsed bracket selected (one cell): all its frames are merged, the result goes on top
+    s.execute("library.select", &json!({"ids": [ids[0].0]})).unwrap();
+    let r = s.execute("merge.focusStack", &json!({"method": "a", "autoSettings": false})).unwrap();
+    assert_eq!(r["used"], 4, "{r}");
+    let res = PhotoId(r["id"].as_u64().unwrap());
+    let st = s.catalog.stack_of(res).unwrap().clone();
+    assert_eq!((st.id, st.kind, st.collapsed), (b0.id, StackKind::FocusBracket, true));
+    assert_eq!(st.photos, [vec![res], ids[0..4].to_vec()].concat(), "on top, the frames in order");
+    assert_eq!(shown(&mut s), vec![ids[4], res]);
+    // the result's cell again: merged from the frames (not from the result), the new one on top
+    let r = s.execute("merge.focusStack", &json!({"method": "c", "autoSettings": false})).unwrap();
+    assert_eq!(r["used"], 4, "{r}");
+    let res2 = PhotoId(r["id"].as_u64().unwrap());
+    assert_eq!(s.catalog.stack_of(res2).map(|st| st.photos[..2].to_vec()), Some(vec![res2, res]));
+    // two collapsed brackets selected: one merge each, each result on its own stack
+    s.execute("library.select", &json!({"ids": [res2.0, ids[4].0]})).unwrap();
+    let r = s.execute("merge.focusStack", &json!({"method": "a", "autoSettings": false})).unwrap();
+    assert_eq!((r["count"].as_u64(), r["perStack"].as_bool()), (Some(2), Some(true)), "{r}");
+    assert_eq!(r["failed"].as_array().map(Vec::len), Some(0), "{r}");
+    let made: Vec<PhotoId> = r["results"].as_array().unwrap().iter().map(|v| PhotoId(v["id"].as_u64().unwrap())).collect();
+    assert_eq!(
+        made.iter().map(|id| s.catalog.stack_of(*id).map(|st| (st.id, st.top()))).collect::<Vec<_>>(),
+        [Some((b0.id, made[0])), Some((b1.id, made[1]))]
+    );
+    // a preview of both shows the first
+    let pv = s.execute("merge.focusStack", &json!({"preview": true})).unwrap();
+    assert_eq!(pv["stacks"], 2, "{pv}");
+    // nothing selected: Focus Stack Each Bracket finds the collapsed brackets
+    s.execute("library.selectNone", &json!({})).unwrap();
+    let photos = s.catalog.photos().count();
+    let r = s.execute("merge.focusStackBatch", &json!({"method": "a", "autoSettings": false})).unwrap();
+    assert_eq!((r["count"].as_u64(), r["failed"].as_array().map(Vec::len)), (Some(2), Some(0)), "{r}");
+    assert!(r["results"].as_array().unwrap().iter().all(|v| v["used"] == 4), "{r}");
+    // the same merges as before (same frames, same method) are new photos all the same: their DNGs
+    // are their own (RawDataUniqueID), not duplicates the import would skip
+    assert_eq!(s.catalog.photos().count(), photos + 2);
+    let info = s.execute("photo.inspect", &json!({"id": ids[4].0})).unwrap();
+    assert_eq!(info["stack"]["kind"], "focusBracket");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #24: adjust the bracket, then merge — the result takes the reference photo's look (white
+/// balance, tone, detail), not its crop, masks or AI denoise, and no Auto Settings on top.
+#[test]
+fn a_merge_takes_the_settings_of_its_edited_sources() {
+    use lightcraft_catalog::PhotoId;
+    use lightcraft_develop::WbMode;
+    let dir = temp_dir("focus-look");
+    let mut paths = Vec::new();
+    for (b, start) in [(0, 0), (1, 30)] {
+        for (i, d) in lightcraft_merge::synth::focus_bracket_dngs(240, 160, 4, start).unwrap().into_iter().enumerate() {
+            let p = dir.join(format!("L{b}_{i}.dng"));
+            std::fs::write(&p, d).unwrap();
+            paths.push(p.to_string_lossy().to_string());
+        }
+    }
+    let mut s = Session::new().with_fs();
+    let all = import(&mut s, paths);
+    let (ids, other) = (all[0..4].to_vec(), all[4..8].to_vec());
+    // adjust one frame and sync it to the bracket; the reference (the middle frame) also gets a
+    // crop and a mask
+    s.execute("library.select", &json!({"ids": ids, "active": ids[0]})).unwrap();
+    s.execute("develop.wb", &json!({"mode": "custom", "temp": 4800, "tint": 12})).unwrap();
+    s.execute("develop.set", &json!({"values": {"light.exposure": 0.7, "light.contrast": 15, "enhance.denoise": 50}})).unwrap();
+    s.execute("develop.sync", &json!({})).unwrap();
+    s.execute("library.select", &json!({"ids": [ids[2]]})).unwrap();
+    s.execute("crop.set", &json!({"rect": [0.1, 0.1, 0.9, 0.9]})).unwrap();
+    s.execute("mask.add", &json!({"kind": "radial"})).unwrap();
+    let src = s.develop_of(PhotoId(ids[2])).unwrap();
+    assert_eq!((src.wb.temp, src.light.exposure, src.masks.len()), (4800.0, 0.7, 1));
+    let r = s.execute("merge.focusStack", &json!({"ids": ids, "method": "a"})).unwrap();
+    assert_eq!(r["settingsFrom"], ids[2], "the reference frame: {r}");
+    let res = PhotoId(r["id"].as_u64().unwrap());
+    let d = s.develop_of(res).unwrap();
+    assert_eq!((d.wb.mode, d.wb.temp, d.wb.tint), (WbMode::Custom, 4800.0, 12.0), "absolute white balance copied");
+    assert_eq!((d.light.exposure, d.light.contrast), (0.7, 15.0), "no Auto Settings over them");
+    assert_eq!(d.crop, Default::default());
+    assert!(d.masks.is_empty());
+    assert_eq!(d.enhance, Default::default(), "no AI denoise on the merged DNG");
+    assert_eq!(s.catalog.photo(res).unwrap().history.last().map(|h| h.label.as_str()), Some("Settings from Sources"));
+    // it renders like a source with the same settings (another frame: same scene, no crop)
+    let mean = |s: &mut Session, id: u64| {
+        let img = s.render_now(PhotoId(id), 96, 96).unwrap().image;
+        let n = img.data.len() as f64;
+        [0, 1, 2].map(|c| img.data.iter().map(|p| p[c] as f64).sum::<f64>() / n)
+    };
+    let (a, b) = (mean(&mut s, ids[1]), mean(&mut s, res.0));
+    assert!((0..3).all(|c| (a[c] - b[c]).abs() < 6.0), "source {a:?} vs result {b:?}");
+    // asked not to: as-shot white balance and Auto Settings, as before
+    let r = s.execute("merge.focusStack", &json!({"ids": ids, "method": "c", "sourceSettings": false})).unwrap();
+    assert!(r.get("settingsFrom").is_none());
+    let d = s.develop_of(PhotoId(r["id"].as_u64().unwrap())).unwrap();
+    assert_eq!(d.wb.mode, WbMode::AsShot);
+    assert!(d.light.exposure != 0.7 && d.light.exposure != 0.0, "Auto Settings: {:?}", d.light);
+    // unedited sources: as before
+    let r = s.execute("merge.focusStack", &json!({"ids": other, "method": "a"})).unwrap();
+    assert!(r.get("settingsFrom").is_none());
+    let d = s.develop_of(PhotoId(r["id"].as_u64().unwrap())).unwrap();
+    assert_eq!(d.wb.mode, WbMode::AsShot);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #24: lens corrections embedded in the sources carry into an HDR (same geometry) and a
+/// focus stack (cut to the area all frames cover; also after retouching), not into a panorama.
+#[test]
+fn lens_corrections_carry_into_hdr_and_focus_results() {
+    use lightcraft_catalog::PhotoId;
+    use lightcraft_geom::Point;
+    use lightcraft_pipeline::optics::{crop_lens, embedded_vignette_gain, embedded_warp};
+    let ops = vec![
+        lightcraft_raw::Opcode::WarpRectilinear { planes: vec![[1.0, 0.02, -0.004, 0.0, 0.0005, -0.0008]], center: [0.48, 0.51] },
+        lightcraft_raw::Opcode::FixVignetteRadial { k: [0.35, -0.08, 0.0, 0.0, 0.0], center: [0.48, 0.51] },
+    ];
+    let with_lens = |dng: Vec<u8>| {
+        let mut raw = lightcraft_raw::decode(&dng).unwrap();
+        raw.opcodes.list3 = ops.clone();
+        lightcraft_raw::write_dng(&raw, &Default::default()).unwrap()
+    };
+    let lens_of = |path: &str| crate::files::embedded_lens(&lightcraft_raw::probe_info(&std::fs::read(path).unwrap()).unwrap()).unwrap();
+    let same = |a: &lightcraft_develop::EmbeddedLens, b: &lightcraft_develop::EmbeddedLens, w: f64, h: f64| {
+        for p in [Point::new(3.0, 4.0), Point::new(w / 2.0, h / 3.0), Point::new(w - 2.0, h - 3.0)] {
+            let (pa, pb) = (embedded_warp(&a.warp.unwrap(), p, 0, w, h), embedded_warp(&b.warp.unwrap(), p, 0, w, h));
+            assert!(pa.dist(pb) < 1e-6, "{pa:?} vs {pb:?}");
+            let (ga, gb) = (embedded_vignette_gain(&a.vignette.unwrap(), p, w, h), embedded_vignette_gain(&b.vignette.unwrap(), p, w, h));
+            assert!((ga - gb).abs() < 1e-9, "{ga} vs {gb}");
+        }
+    };
+    let dir = temp_dir("lens");
+    let write = |name: String, b: Vec<u8>| {
+        let p = dir.join(name);
+        std::fs::write(&p, with_lens(b)).unwrap();
+        p.to_string_lossy().to_string()
+    };
+    let hdr: Vec<String> = lightcraft_merge::synth::bracket_dngs(240, 160, &[-1.0, 0.0, 1.0])
+        .unwrap()
+        .into_iter()
+        .enumerate()
+        .map(|(i, b)| write(format!("H{i}.dng"), b))
+        .collect();
+    let focus: Vec<String> = lightcraft_merge::synth::focus_bracket_dngs(240, 160, 4, 60)
+        .unwrap()
+        .into_iter()
+        .enumerate()
+        .map(|(i, b)| write(format!("F{i}.dng"), b))
+        .collect();
+    let mut s = Session::new().with_fs();
+    let src = lens_of(&hdr[0]);
+    let hdr_ids = import(&mut s, hdr.clone());
+    let focus_ids = import(&mut s, focus.clone());
+    // HDR: the reference frame's geometry, its lens model as it was
+    let r = s.execute("merge.hdr", &json!({"ids": hdr_ids, "autoSettings": false})).unwrap();
+    let res = PhotoId(r["id"].as_u64().unwrap());
+    same(&src, &lens_of(r["path"].as_str().unwrap()), 240.0, 160.0);
+    assert!(s.catalog.photo(res).unwrap().embedded_lens.is_some());
+    assert!(s.develop_of(res).unwrap().optics.lens_profile, "Lens Corrections on, as for the sources");
+    // focus stack: the model moved with the cut
+    let r = s.execute("merge.focusStack", &json!({"ids": focus_ids, "method": "a", "autoSettings": false})).unwrap();
+    let (c, fs) = (&r["crop"], &r["frameSize"]);
+    let (fw, fh) = (fs[0].as_f64().unwrap(), fs[1].as_f64().unwrap());
+    let cut = [c[0].as_f64().unwrap() / fw, c[1].as_f64().unwrap() / fh, c[2].as_f64().unwrap() / fw, c[3].as_f64().unwrap() / fh];
+    let (w, h) = (c[2].as_f64().unwrap(), c[3].as_f64().unwrap());
+    assert!(w < fw && h < fh, "a cut: {r}");
+    let path = r["path"].as_str().unwrap().to_string();
+    let want = crop_lens(&lens_of(&focus[1]), cut, fw, fh);
+    same(&want, &lens_of(&path), w, h);
+    // retouched: still there
+    let id = PhotoId(r["id"].as_u64().unwrap());
+    s.execute("merge.focusRetouch", &json!({"id": id.0, "strokes": [{"source": 0, "points": [[0.5, 0.5]], "size": 0.1}]})).unwrap();
+    same(&want, &lens_of(&path), w, h);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #24: with the library preference on, an import stacks the focus brackets it brings in
+/// (one undo step with the import).
+#[test]
+fn an_import_stacks_its_focus_brackets_when_asked() {
+    use lightcraft_catalog::StackKind;
+    let dir = temp_dir("import-stack");
+    let mut paths = Vec::new();
+    for (b, start) in [(0, 0), (1, 30)] {
+        for (i, d) in lightcraft_merge::synth::focus_bracket_dngs(120, 80, 3, start).unwrap().into_iter().enumerate() {
+            let p = dir.join(format!("I{b}_{i}.dng"));
+            std::fs::write(&p, d).unwrap();
+            paths.push(p.to_string_lossy().to_string());
+        }
+    }
+    let mut s = Session::new().with_fs();
+    let r = s.execute("library.preferences", &json!({"import": {"stackFocusBrackets": true}})).unwrap();
+    assert_eq!(r["import"]["stackFocusBrackets"], true);
+    let r = s.execute("library.import", &json!({"paths": paths})).unwrap();
+    assert_eq!(r["focusBrackets"], 2, "{r}");
+    assert_eq!(s.catalog.stacks().filter(|st| st.kind == StackKind::FocusBracket && st.collapsed).count(), 2);
+    assert_eq!(s.visible_cloned().len(), 2);
+    // the selected first photo is its stack's cell
+    assert!(s.selection.active.is_some_and(|a| s.visible_cloned().contains(&a)));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!((s.catalog.photos().count(), s.catalog.stacks().count()), (0, 0), "one undo step");
+    // asked not to
+    s.execute("edit.redo", &json!({})).unwrap();
+    let more = dir.join("more");
+    std::fs::create_dir_all(&more).unwrap();
+    let mut p2 = Vec::new();
+    for (i, d) in lightcraft_merge::synth::focus_bracket_dngs(120, 80, 3, 90).unwrap().into_iter().enumerate() {
+        let p = more.join(format!("M{i}.dng"));
+        std::fs::write(&p, d).unwrap();
+        p2.push(p.to_string_lossy().to_string());
+    }
+    let r = s.execute("library.import", &json!({"paths": p2, "stackFocusBrackets": false})).unwrap();
+    assert!(r.get("focusBrackets").is_none(), "{r}");
+    assert_eq!(s.catalog.stacks().count(), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_focus_stack_is_retouched_from_a_frame_and_back() {
     let dir = temp_dir("focus-retouch");
@@ -276,6 +528,21 @@ fn a_merge_of_vendor_raws_keeps_their_colours() {
     let merged = mean(&mut s, id);
     for c in 0..3 {
         assert!((src[c] - merged[c]).abs() < 3.0, "source {src:?}, merged {merged:?}");
+    }
+    // #24: adjusted first (an ARW's white balance is relative to its as-shot white, the merged
+    // DNG's absolute), the result takes the adjustment and still looks like its source
+    s.execute("library.select", &json!({"ids": ids, "active": ids[0]})).unwrap();
+    s.execute("develop.wb", &json!({"mode": "custom", "temp": 4300, "tint": 15})).unwrap();
+    s.execute("develop.set", &json!({"values": {"light.exposure": 0.4}})).unwrap();
+    s.execute("develop.sync", &json!({})).unwrap();
+    let r = s.execute("merge.focusStack", &json!({"ids": ids, "method": "a", "maxMegapixels": 1.5})).unwrap();
+    let id = lightcraft_catalog::PhotoId(r["id"].as_u64().unwrap());
+    let d = s.develop_of(id).unwrap();
+    assert_eq!((d.wb.mode, d.light.exposure), (lightcraft_develop::WbMode::Custom, 0.4), "{:?}", d.wb);
+    let src = mean(&mut s, lightcraft_catalog::PhotoId(ids[0]));
+    let merged = mean(&mut s, id);
+    for c in 0..3 {
+        assert!((src[c] - merged[c]).abs() < 3.0, "adjusted: source {src:?}, merged {merged:?} ({:?})", d.wb);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

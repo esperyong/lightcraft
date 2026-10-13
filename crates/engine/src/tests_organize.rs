@@ -256,3 +256,99 @@ fn random_sort_persists_with_the_view() {
     assert_eq!(s2.sort.seed, 123_456_789);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Issue #24: a photo standing for a collapsed stack stands for all its members, for the commands
+/// that take stacks whole (merges, develop settings); explicit ids are taken as given.
+#[test]
+fn a_collapsed_stack_stands_for_its_members() {
+    use crate::stack_scope::Members;
+    let dir = temp_dir("scope");
+    let mut s = open(&dir);
+    let vis = s.visible_cloned();
+    let (a, b, c, d, e, f) = (vis[2], vis[3], vis[4], vis[5], vis[6], vis[7]);
+    s.execute("library.select", &json!({"ids": [a.0, b.0, c.0], "active": b.0})).unwrap();
+    s.execute("stack.group", &json!({})).unwrap();
+    s.execute("library.select", &json!({"ids": [e.0, f.0], "active": e.0})).unwrap();
+    s.execute("stack.group", &json!({})).unwrap();
+    // one cell selected: the whole stack, in stack order
+    s.execute("library.select", &json!({"ids": [b.0]})).unwrap();
+    let sc = s.stack_targets(&json!({}), Members::All);
+    assert_eq!(sc.ids, vec![b, a, c]);
+    assert!(sc.loose.is_empty());
+    assert_eq!(sc.from_one_stack(), s.catalog.stack_of(b).map(|st| st.id));
+    assert!(!sc.per_stack());
+    // with a loose photo: everything is one group
+    s.execute("library.select", &json!({"ids": [b.0, d.0]})).unwrap();
+    let sc = s.stack_targets(&json!({}), Members::All);
+    assert_eq!((sc.ids.clone(), sc.loose.clone()), (vec![b, a, c, d], vec![d]));
+    assert_eq!(sc.from_one_stack(), None);
+    assert_eq!(sc.groups(), vec![vec![b, a, c, d]]);
+    // two collapsed stacks: one group each; a hidden member selected too changes nothing
+    s.execute("library.select", &json!({"ids": [b.0, a.0, e.0]})).unwrap();
+    let sc = s.stack_targets(&json!({}), Members::All);
+    assert!(sc.per_stack());
+    assert_eq!(sc.groups(), vec![vec![b, a, c], vec![e, f]]);
+    // explicit ids are taken as given, unless asked
+    assert_eq!(s.stack_targets(&json!({"ids": [b.0]}), Members::All).ids, vec![b]);
+    assert_eq!(s.stack_targets(&json!({"ids": [b.0], "expandStacks": true}), Members::All).ids, vec![b, a, c]);
+    // an expanded stack: each photo stands for itself
+    s.execute("library.select", &json!({"ids": [b.0]})).unwrap();
+    s.execute("stack.toggle", &json!({})).unwrap();
+    assert_eq!(s.stack_targets(&json!({}), Members::All).ids, vec![b]);
+    s.execute("stack.toggle", &json!({})).unwrap();
+    // deleted members are left out; in Recently Deleted nothing is expanded
+    s.execute("photo.delete", &json!({"ids": [c.0]})).unwrap();
+    s.execute("library.select", &json!({"ids": [b.0]})).unwrap();
+    assert_eq!(s.stack_targets(&json!({}), Members::Sources).ids, vec![b, a]);
+    s.execute("library.source", &json!({"kind": "recentlyDeleted"})).unwrap();
+    s.execute("library.select", &json!({"ids": [c.0]})).unwrap();
+    assert_eq!(s.stack_targets(&json!({}), Members::All).ids, vec![c]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #24: settings reach every photo of a selected collapsed stack (Sync, Paste, presets,
+/// Quick Develop, Auto Sync); ratings stay with the photo the grid shows.
+#[test]
+fn develop_commands_reach_a_collapsed_stack_whole() {
+    let dir = temp_dir("stack-develop");
+    let mut s = open(&dir);
+    let vis = s.visible_cloned();
+    let (a, b, c, d) = (vis[2], vis[3], vis[4], vis[5]);
+    s.execute("library.select", &json!({"ids": [a.0, b.0, c.0], "active": b.0})).unwrap();
+    s.execute("stack.group", &json!({})).unwrap();
+    let exposure = |s: &Session, id| s.develop_of(id).unwrap().light.exposure;
+    // Sync: one cell selected, the stack's photos take the top's settings
+    s.execute("library.select", &json!({"ids": [b.0]})).unwrap();
+    let a0 = exposure(&s, a);
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.5})).unwrap();
+    assert_eq!(exposure(&s, a), a0, "Auto Sync is off: unchanged before Sync");
+    let r = s.execute("develop.sync", &json!({})).unwrap();
+    assert_eq!(r["changed"], 2);
+    assert_eq!([exposure(&s, a), exposure(&s, c)], [0.5, 0.5]);
+    // Paste
+    s.execute("library.select", &json!({"ids": [d.0]})).unwrap();
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": 1.0})).unwrap();
+    s.execute("develop.copy", &json!({})).unwrap();
+    s.execute("library.select", &json!({"ids": [b.0]})).unwrap();
+    s.execute("develop.paste", &json!({})).unwrap();
+    assert_eq!([exposure(&s, a), exposure(&s, b), exposure(&s, c)], [1.0; 3]);
+    // Quick Develop and presets
+    s.execute("develop.quickAdjust", &json!({"control": "light.exposure", "delta": 0.25})).unwrap();
+    assert_eq!([exposure(&s, a), exposure(&s, b), exposure(&s, c)], [1.25; 3]);
+    let preset = s.presets.first().map(|p| p.id.clone()).unwrap();
+    s.execute("preset.apply", &json!({"id": preset})).unwrap();
+    for id in [a, b, c] {
+        assert!(s.catalog.photo(id).unwrap().history.last().is_some_and(|h| h.label.starts_with("Preset:")), "{id:?}");
+    }
+    // Auto Sync
+    s.execute("develop.autoSync", &json!({"on": true})).unwrap();
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": 2.0})).unwrap();
+    assert_eq!([exposure(&s, a), exposure(&s, c)], [2.0, 2.0]);
+    s.execute("develop.autoSync", &json!({"on": false})).unwrap();
+    // a rating is the shown photo's alone
+    let rating = |s: &Session, id| s.catalog.photo(id).unwrap().rating;
+    let before = [rating(&s, a), rating(&s, c)];
+    s.execute("photo.rate", &json!({"rating": 3})).unwrap();
+    assert_eq!((rating(&s, b), [rating(&s, a), rating(&s, c)]), (3, before));
+    let _ = std::fs::remove_dir_all(&dir);
+}

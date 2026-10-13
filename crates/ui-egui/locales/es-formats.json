@@ -209,5 +209,10 @@
   "•  {assumption}": "•  {assumption}",
   "Analyzed {} photos": "{} fotos analizadas",
   "Analyzed {} photos ({} could not be analyzed)": "{} fotos analizadas ({} no se pudieron analizar)",
-  "Analyzing photos: {done} of {total}": "Analizando fotos: {done} de {total}"
+  "Analyzing photos: {done} of {total}": "Analizando fotos: {done} de {total}",
+  " · {} focus bracket{} stacked": " · {0} serie(s) de enfoque apilada(s){1:.0}",
+  "{g} stacks, merged one by one": "{g} pilas, combinadas una a una",
+  "{n} photos (from a stack)": "{n} fotos (de una pila)",
+  "Finds {} focus bracket{} ({} photos) among {scope}": "Encuentra {0} serie(s) de enfoque ({2} fotos) entre {scope}{1:.0}",
+  "Stacked {} focus bracket{} ({} already were)": "{0} serie(s) de enfoque apilada(s) ({2} ya lo estaban){1:.0}"
 }

@@ -319,6 +319,22 @@ pub fn reorient_lens(lens: &EmbeddedLens, o: Orientation, w: f64, h: f64) -> Emb
     EmbeddedLens { warp, vignette }
 }
 
+/// Re-express embedded lens data (relative to a `w × h` image) for the part `crop` of it (normalised
+/// x, y, width, height), e.g. a focus stack cut to the area all its frames cover. The model stays
+/// in pixels: only the centre and the normalisation radius are re-expressed.
+pub fn crop_lens(lens: &EmbeddedLens, crop: [f64; 4], w: f64, h: f64) -> EmbeddedLens {
+    let [x, y, cw, ch] = crop;
+    if !(cw > 0.0 && ch > 0.0 && w > 0.0 && h > 0.0) || [x, y, cw, ch, w, h].iter().any(|v| !v.is_finite()) {
+        return *lens;
+    }
+    let ratio = w.max(h) / (cw * w).max(ch * h);
+    let centre = |c: Point| Point::new((c.x - x) / cw, (c.y - y) / ch);
+    EmbeddedLens {
+        warp: lens.warp.map(|wp| EmbeddedWarp { center: centre(wp.center), radius: wp.radius * ratio, ..wp }),
+        vignette: lens.vignette.map(|v| EmbeddedVignette { center: centre(v.center), radius: v.radius * ratio, ..v }),
+    }
+}
+
 // ------------------------------------------------------------------------------------------ lateral CA
 
 /// Estimate lateral chromatic aberration: the radial magnification of the red and blue planes relative to green
@@ -856,6 +872,30 @@ mod tests {
         let wp = Warp::from_settings(300.0, 200.0, &s, None);
         assert!((wp.gain(Point::new(150.0, 100.0)) - 1.0).abs() < 1e-6);
         assert!(wp.gain(Point::new(0.0, 0.0)) > 2.0);
+    }
+
+    /// Cropping moves the model with the picture: a point's warped position and vignette gain are
+    /// those of the same point in the whole frame.
+    #[test]
+    fn crop_keeps_the_lens_model_in_place() {
+        let lens = EmbeddedLens {
+            warp: Some(EmbeddedWarp { planes: [[1.0, 0.02, -0.004, 0.001, 0.001, 0.002]; 3], center: Point::new(0.48, 0.52), radius: 0.62 }),
+            vignette: Some(EmbeddedVignette { k: [0.3, -0.05, 0.01, 0.0, 0.0], center: Point::new(0.48, 0.52), radius: 0.62 }),
+        };
+        let (w, h) = (600.0, 400.0);
+        let crop = [0.05, 0.08, 0.88, 0.8];
+        let c = crop_lens(&lens, crop, w, h);
+        let (cw, ch) = (crop[2] * w, crop[3] * h);
+        let (ox, oy) = (crop[0] * w, crop[1] * h);
+        for p in [Point::new(10.0, 20.0), Point::new(300.0, 150.0), Point::new(500.0, 300.0)] {
+            let full = Point::new(p.x + ox, p.y + oy);
+            let a = embedded_warp(&lens.warp.unwrap(), full, 1, w, h);
+            let b = embedded_warp(&c.warp.unwrap(), p, 1, cw, ch);
+            assert!(b.dist(Point::new(a.x - ox, a.y - oy)) < 1e-9, "{a:?} vs {b:?}");
+            let (ga, gb) = (embedded_vignette_gain(&lens.vignette.unwrap(), full, w, h), embedded_vignette_gain(&c.vignette.unwrap(), p, cw, ch));
+            assert!((ga - gb).abs() < 1e-12, "{ga} vs {gb}");
+        }
+        assert_eq!(crop_lens(&lens, [0.0, 0.0, 0.0, 1.0], w, h), lens, "no area: unchanged");
     }
 
     #[test]

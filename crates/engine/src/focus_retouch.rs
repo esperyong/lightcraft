@@ -351,6 +351,8 @@ pub struct Retouch {
     base_frame: Frame,
     /// The stack DNG's private data (the source's camera look), for the previews' DNGs.
     private_data: Option<Vec<u8>>,
+    /// The stack DNG's lens corrections, for the previews' DNGs.
+    lens_opcodes: Vec<lightcraft_raw::Opcode>,
     settings: DevelopSettings,
     edge: usize,
 }
@@ -376,7 +378,12 @@ impl Retouch {
         let mut img = (*self.src.base).clone();
         composite(&mut img, strokes, |s| self.src.get(s))?;
         let f = &self.base_frame;
-        let extra = lightcraft_merge::DngExtra { masks: Vec::new(), private_data: self.private_data.clone() };
+        let extra = lightcraft_merge::DngExtra {
+            masks: Vec::new(),
+            private_data: self.private_data.clone(),
+            unique_id: None,
+            lens_opcodes: self.lens_opcodes.clone(),
+        };
         let dng = lightcraft_merge::write_linear_dng_with(
             &img,
             &f.color,
@@ -439,6 +446,9 @@ impl RetouchJob {
         let extra = lightcraft_merge::DngExtra {
             masks: lightcraft_raw::semantic_masks(&self.base_bytes),
             private_data: crate::camera_preview::private_data_of(&self.base_bytes),
+            unique_id: None,
+            // the retouched stack keeps the lens corrections the merge gave it
+            lens_opcodes: crate::files::lens_opcodes_of(&self.base_bytes),
         };
         let dng = lightcraft_merge::write_linear_dng_with(
             &img,
@@ -527,6 +537,7 @@ impl RetouchOpen {
             },
             base_frame: base,
             private_data: crate::camera_preview::private_data_of(&bytes),
+            lens_opcodes: crate::files::lens_opcodes_of(&bytes),
             settings,
             edge,
         })

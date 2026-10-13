@@ -209,5 +209,10 @@
   "•  {assumption}": "•  {assumption}",
   "Analyzed {} photos": "{}枚の写真を分析しました",
   "Analyzed {} photos ({} could not be analyzed)": "{}枚の写真を分析しました（{}枚は分析できませんでした）",
-  "Analyzing photos: {done} of {total}": "写真を分析中：{total}枚中{done}枚"
+  "Analyzing photos: {done} of {total}": "写真を分析中：{total}枚中{done}枚",
+  " · {} focus bracket{} stacked": "・フォーカスブラケット{0}組をスタック{1:.0}",
+  "{g} stacks, merged one by one": "{g} 個のスタックを 1 つずつ合成",
+  "{n} photos (from a stack)": "{n} 枚（スタックから）",
+  "Finds {} focus bracket{} ({} photos) among {scope}": "{scope}からフォーカスブラケットを {0} 組（{2} 枚）見つけました{1:.0}",
+  "Stacked {} focus bracket{} ({} already were)": "フォーカスブラケットを {0} 組スタックしました（{2} 組はスタック済み）{1:.0}"
 }

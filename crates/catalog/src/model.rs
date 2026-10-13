@@ -26,6 +26,32 @@ pub struct Stack {
     /// Collapsed stacks show only their top photo in the grid.
     #[serde(default)]
     pub collapsed: bool,
+    /// What made the stack (the grid marks focus brackets on the count badge).
+    #[serde(default, skip_serializing_if = "StackKind::is_plain")]
+    pub kind: StackKind,
+}
+
+/// What a stack groups.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StackKind {
+    /// Grouped by hand, by capture time, or a merge result with its sources.
+    #[default]
+    Plain,
+    /// A focus bracket found by `merge.detectFocusBrackets` (frames for a focus stack).
+    FocusBracket,
+}
+
+impl StackKind {
+    pub fn is_plain(&self) -> bool {
+        *self == StackKind::Plain
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StackKind::Plain => "plain",
+            StackKind::FocusBracket => "focusBracket",
+        }
+    }
 }
 
 impl Stack {

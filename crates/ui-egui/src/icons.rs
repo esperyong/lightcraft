@@ -80,6 +80,8 @@ pub enum Icon {
     Chat,
     /// Face boxes on/off: four corner brackets round a small face.
     FaceBox,
+    /// A focus bracket (on a stack's badge): a focus ring with a centre dot and four ticks.
+    FocusBracket,
 }
 
 struct Pen<'a> {
@@ -456,6 +458,14 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Edited => {
             pen.circle(10.0, 10.0, 7.0);
             pen.line(&[(7.0, 13.0), (13.0, 7.0)]);
+        }
+        FocusBracket => {
+            pen.circle(10.0, 10.0, 5.5);
+            pen.dot(10.0, 10.0, 1.4);
+            pen.line(&[(10.0, 1.5), (10.0, 4.5)]);
+            pen.line(&[(10.0, 15.5), (10.0, 18.5)]);
+            pen.line(&[(1.5, 10.0), (4.5, 10.0)]);
+            pen.line(&[(15.5, 10.0), (18.5, 10.0)]);
         }
         Target => {
             pen.circle(8.0, 10.0, 5.0);

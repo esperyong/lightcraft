@@ -48,6 +48,13 @@ fn meta_of(m: &lightcraft_meta::Metadata) -> (Meta, Option<String>) {
 /// raw reader's equivalent of the camera's correction, e.g. Panasonic / Leica RW2 distortion), re-expressed for the
 /// default-cropped, EXIF-oriented image. These are the only "profile" corrections LightCraft applies.
 pub fn embedded_lens(raw: &lightcraft_raw::RawInfo) -> Option<lightcraft_develop::EmbeddedLens> {
+    let (lens, cw, ch) = embedded_lens_frame(raw)?;
+    Some(lightcraft_pipeline::optics::reorient_lens(&lens, raw.orientation, cw, ch))
+}
+
+/// [`embedded_lens`] for the default-cropped image as stored (before the EXIF orientation), with
+/// that image's width and height.
+pub fn embedded_lens_frame(raw: &lightcraft_raw::RawInfo) -> Option<(lightcraft_develop::EmbeddedLens, f64, f64)> {
     use lightcraft_develop::{EmbeddedLens, EmbeddedVignette, EmbeddedWarp};
     use lightcraft_geom::Point;
     let (aw, ah) = (raw.active_area.width as f64, raw.active_area.height as f64);
@@ -61,11 +68,7 @@ pub fn embedded_lens(raw: &lightcraft_raw::RawInfo) -> Option<lightcraft_develop
     // opcode centres are relative to the (uncropped) active area, in pixel-index units
     let centre = |rel: [f64; 2]| -> (Point, f64) {
         let (px, py) = (rel[0] * (aw - 1.0), rel[1] * (ah - 1.0));
-        let m = [(0.0, 0.0), (aw - 1.0, 0.0), (0.0, ah - 1.0), (aw - 1.0, ah - 1.0)]
-            .iter()
-            .map(|&(x, y)| (x - px).hypot(y - py))
-            .fold(0.0, f64::max)
-            .max(1e-9);
+        let m = farthest_corner(px, py, aw, ah);
         (Point::new((px + 0.5 - cx0) / cw, (py + 0.5 - cy0) / ch), m / long)
     };
     let mut lens = EmbeddedLens::default();
@@ -86,7 +89,63 @@ pub fn embedded_lens(raw: &lightcraft_raw::RawInfo) -> Option<lightcraft_develop
     if lens.warp.is_none() && lens.vignette.is_none() {
         return None;
     }
-    Some(lightcraft_pipeline::optics::reorient_lens(&lens, raw.orientation, cw, ch))
+    Some((lens, cw, ch))
+}
+
+/// Distance from (`px`, `py`) to the farthest pixel-index corner of a `w × h` image: the DNG
+/// opcodes' normalisation radius.
+fn farthest_corner(px: f64, py: f64, w: f64, h: f64) -> f64 {
+    [(0.0, 0.0), (w - 1.0, 0.0), (0.0, h - 1.0), (w - 1.0, h - 1.0)].iter().map(|&(x, y)| (x - px).hypot(y - py)).fold(0.0, f64::max).max(1e-9)
+}
+
+/// The lens corrections in a raw file's `OpcodeList3` (none when it isn't a raw).
+pub fn lens_opcodes_of(bytes: &[u8]) -> Vec<lightcraft_raw::Opcode> {
+    if lightcraft_raw::probe(bytes).is_none() {
+        return Vec::new();
+    }
+    lightcraft_raw::probe_info(bytes)
+        .map(|i| i.opcodes.list3.into_iter().filter(lightcraft_raw::Opcode::is_lens_correction).collect())
+        .unwrap_or_default()
+}
+
+/// The `OpcodeList3` lens corrections that [`embedded_lens_frame`] reads back as `lens` from a
+/// `w × h` image without a default crop (a merged DNG): the inverse of the reading, coefficients
+/// re-scaled to the opcodes' own normalisation radius. Empty for a degenerate image or model.
+pub fn lens_opcodes(lens: &lightcraft_develop::EmbeddedLens, w: usize, h: usize) -> Vec<lightcraft_raw::Opcode> {
+    let (w, h) = (w as f64, h as f64);
+    if w < 2.0 || h < 2.0 {
+        return Vec::new();
+    }
+    let long = w.max(h);
+    // (relative centre, opcode radius / model radius) for a model centre and radius
+    let place = |c: lightcraft_geom::Point, radius: f64| -> Option<([f64; 2], f64)> {
+        let rel = [(c.x * w - 0.5) / (w - 1.0), (c.y * h - 0.5) / (h - 1.0)];
+        let s = farthest_corner(rel[0] * (w - 1.0), rel[1] * (h - 1.0), w, h) / (radius * long);
+        (rel.iter().all(|v| v.is_finite()) && s.is_finite() && s > 0.0).then_some((rel, s))
+    };
+    let finite = |v: &[f64]| v.iter().all(|x| x.is_finite());
+    let mut ops = Vec::new();
+    if let Some(wp) = lens.warp
+        && let Some((center, s)) = place(wp.center, wp.radius)
+    {
+        let planes: Vec<[f64; 6]> =
+            wp.planes.iter().map(|[k0, k1, k2, k3, t0, t1]| [*k0, k1 * s.powi(2), k2 * s.powi(4), k3 * s.powi(6), t0 * s, t1 * s]).collect();
+        if planes.iter().all(|p| finite(p)) {
+            ops.push(lightcraft_raw::Opcode::WarpRectilinear { planes, center });
+        }
+    }
+    if let Some(v) = lens.vignette
+        && let Some((center, s)) = place(v.center, v.radius)
+    {
+        let mut k = v.k;
+        for (i, x) in k.iter_mut().enumerate() {
+            *x *= s.powi(2 * (i as i32 + 1));
+        }
+        if finite(&k) {
+            ops.push(lightcraft_raw::Opcode::FixVignetteRadial { k, center });
+        }
+    }
+    ops
 }
 
 fn ext_upper(name: &str) -> String {
@@ -698,6 +757,65 @@ impl crate::Session {
 pub(crate) mod tests {
     use super::*;
     use lightcraft_codecs::{ChromaSubsampling, EncodeImage, EncodeMeta, Samples, encode_jpeg};
+
+    fn raw_info(
+        w: usize,
+        h: usize,
+        crop: lightcraft_raw::Rect,
+        orientation: Orientation,
+        list3: Vec<lightcraft_raw::Opcode>,
+    ) -> lightcraft_raw::RawInfo {
+        lightcraft_raw::RawInfo {
+            format: lightcraft_raw::RawFormat::Dng,
+            width: w,
+            height: h,
+            cpp: 3,
+            cfa: None,
+            bits: 16,
+            active_area: lightcraft_raw::Rect::new(0, 0, w, h),
+            crop,
+            orientation,
+            color: Default::default(),
+            wb_multipliers: None,
+            opcodes: lightcraft_raw::OpcodeLists { list3, ..Default::default() },
+            metadata: Default::default(),
+        }
+    }
+
+    /// #24: a merged DNG cut from its reference photo carries the photo's lens corrections — written
+    /// as opcodes for the cut, they read back as the photo's model moved with the cut.
+    #[test]
+    fn lens_corrections_survive_a_crop_written_back_as_opcodes() {
+        use lightcraft_geom::Point;
+        use lightcraft_pipeline::optics::{crop_lens, embedded_vignette_gain, embedded_warp};
+        let ops = vec![
+            lightcraft_raw::Opcode::WarpRectilinear { planes: vec![[1.0, 0.03, -0.006, 0.001, 0.0008, -0.0012]], center: [0.47, 0.53] },
+            lightcraft_raw::Opcode::FixVignetteRadial { k: [0.4, -0.1, 0.02, 0.0, 0.0], center: [0.47, 0.53] },
+        ];
+        for orientation in [Orientation::Normal, Orientation::Rotate90, Orientation::Rotate270] {
+            let src = raw_info(640, 420, lightcraft_raw::Rect::new(12, 10, 600, 400), orientation, ops.clone());
+            let lens = embedded_lens(&src).unwrap();
+            let (fw, fh) = if orientation.swaps_axes() { (400.0, 600.0) } else { (600.0, 400.0) };
+            // the common area of a focus stack: a little off-centre
+            let crop = [0.04, 0.03, 0.9, 0.92];
+            let want = crop_lens(&lens, crop, fw, fh);
+            let (w, h) = ((crop[2] * fw).round() as usize, (crop[3] * fh).round() as usize);
+            let back = embedded_lens(&raw_info(w, h, lightcraft_raw::Rect::new(0, 0, w, h), Orientation::Normal, lens_opcodes(&want, w, h))).unwrap();
+            let (wf, hf) = (w as f64, h as f64);
+            for p in [Point::new(5.0, 7.0), Point::new(wf / 2.0, hf / 3.0), Point::new(wf - 3.0, hf - 2.0)] {
+                let (a, b) = (embedded_warp(&want.warp.unwrap(), p, 0, wf, hf), embedded_warp(&back.warp.unwrap(), p, 0, wf, hf));
+                assert!(a.dist(b) < 1e-6, "{orientation:?}: {a:?} vs {b:?}");
+                let (ga, gb) =
+                    (embedded_vignette_gain(&want.vignette.unwrap(), p, wf, hf), embedded_vignette_gain(&back.vignette.unwrap(), p, wf, hf));
+                assert!((ga - gb).abs() < 1e-9, "{orientation:?}: {ga} vs {gb}");
+            }
+        }
+        assert!(lens_opcodes(&lightcraft_develop::EmbeddedLens::default(), 100, 100).is_empty());
+        assert!(
+            lens_opcodes(&embedded_lens(&raw_info(64, 48, lightcraft_raw::Rect::new(0, 0, 64, 48), Orientation::Normal, ops)).unwrap(), 1, 1)
+                .is_empty()
+        );
+    }
 
     /// Issue #367: probes read headers, not pixels, and report what the decode-based probe did:
     /// oriented dimensions (EXIF orientation 6 swaps them), metadata, the error for a truncated

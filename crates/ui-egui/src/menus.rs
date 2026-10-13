@@ -141,6 +141,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.newSmartAlbum", "New Smart Album from Filter…", Some("Cmd+Alt+N"), "File"),
     ("dialog.createPreset", "Create Preset…", Some("Cmd+Shift+P"), "Photo"),
     ("dialog.autoStack", "Auto-Stack by Capture Time…", None, "Photo>Stack"),
+    ("dialog.autoStackFocus", "Auto-Stack Focus Brackets…", None, "Photo>Stack"),
     ("dialog.copySettings", "Choose Edit Settings to Copy…", Some("Cmd+Shift+C"), "Edit"),
     ("dialog.pasteSettings", "Paste Selected Settings…", Some("Cmd+Shift+V"), "Edit"),
     ("view.focusSearch", "Find…", Some("Cmd+F"), "Edit"),
@@ -858,6 +859,12 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
             app.ui.dialog = Some(Dialog::AutoStack { gap: p.get("gap").and_then(Value::as_f64).unwrap_or(60.0) as f32 });
             Ok(Value::Null)
         }
+        "dialog.autoStackFocus" => {
+            let gap = p.get("gapSecs").and_then(Value::as_f64).filter(|g| g.is_finite()).unwrap_or(2.0).clamp(0.5, 60.0) as f32;
+            let same_exposure = p.get("sameExposure").and_then(Value::as_bool).unwrap_or(true);
+            app.ui.dialog = Some(Dialog::AutoStackFocus { gap, same_exposure });
+            Ok(Value::Null)
+        }
         "dialog.allMetadata" => {
             let r = match app.session.execute("photo.allMetadata", p) {
                 Ok(r) => r,
@@ -1483,9 +1490,11 @@ pub fn ui_enabled(app: &LightcraftApp, id: &str) -> bool {
         "app.openLogFolder" => app.services.reveal.is_some() && app.services.log_file.is_some(),
         "file.restoreLibrary" => app.services.restore_library.is_some(),
         "compare.swap" | "compare.makeSelect" => app.ui.view == ViewMode::Compare,
+        // a collapsed stack selected stands for its photos
         s if s.starts_with("dialog.merge") || (s.starts_with("merge.") && s.ends_with("Last")) => {
-            app.session.targets(&serde_json::json!({})).len() >= 2 && app.merge.final_task.is_none()
+            app.merge.final_task.is_none() && crate::merge::can_merge(app)
         }
+        "dialog.autoStackFocus" => app.session.catalog.len() >= 2,
         "merge.focusStackBrackets" => app.merge.final_task.is_none() && app.session.catalog.len() >= 2,
         "dialog.focusRetouch" => !app.retouch.busy() && app.session.active().is_some_and(|id| app.session.has_focus_project(id)),
         _ => true,

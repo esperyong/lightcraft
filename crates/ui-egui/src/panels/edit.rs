@@ -119,7 +119,8 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             crate::widgets::preview_only_notice(ui, "edit", why, apple_raw);
         });
     }
-    let n = app.session.selection.ids.len();
+    // the photos edits reach: a collapsed stack selected stands for all its photos
+    let n = app.session.expand_stacks(&app.session.selection.ids, lightcraft_engine::stack_scope::Members::All).ids.len();
     if n > 1 && matches!(app.ui.view, crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid) {
         quick_develop(app, ui, n);
     }

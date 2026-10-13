@@ -47,6 +47,7 @@ pub mod logging;
 pub mod media;
 pub mod memory;
 pub mod merge;
+pub mod merge_look;
 mod model_download;
 pub mod originals;
 pub mod preset_import;
@@ -56,6 +57,7 @@ pub mod rename;
 pub mod segment;
 pub mod sidecar;
 pub mod smart;
+pub mod stack_scope;
 pub mod subject;
 mod view;
 pub mod walk;
@@ -631,15 +633,15 @@ impl Session {
     }
 
     /// With Auto Sync on, the ops that carry an edit of the active photo `id` (to `new`) over to the
-    /// other selected photos: only the settings that changed; never spot removal or red eye (they
-    /// belong to one photo's pixels), nor history / snapshot restores.
+    /// other selected photos (a collapsed stack: all its photos): only the settings that changed;
+    /// never spot removal or red eye (they belong to one photo's pixels), nor history / snapshot
+    /// restores.
     fn auto_sync_ops(&self, id: PhotoId, new: &DevelopSettings, label: &str) -> Vec<Op> {
-        if !self.auto_sync
-            || self.active() != Some(id)
-            || self.selection.ids.len() < 2
-            || label.starts_with("History:")
-            || label.starts_with("Restore ")
-        {
+        if !self.auto_sync || self.active() != Some(id) || label.starts_with("History:") || label.starts_with("Restore ") {
+            return Vec::new();
+        }
+        let targets = self.expand_stacks(&self.selection.ids, stack_scope::Members::All).ids;
+        if targets.len() < 2 {
             return Vec::new();
         }
         let Some(old) = self.develop_of(id) else { return Vec::new() };
@@ -652,8 +654,7 @@ impl Session {
                 return Vec::new();
             }
         }
-        self.selection
-            .ids
+        targets
             .iter()
             .filter(|x| **x != id)
             .filter_map(|x| self.develop_of(*x).map(|d| (*x, d)))

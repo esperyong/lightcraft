@@ -94,6 +94,7 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context) {
         Dialog::SmartRules { id: None, .. } => "New Smart Album",
         Dialog::SmartRules { .. } => "Edit Smart Album",
         Dialog::AutoStack { .. } => "Auto-Stack by Capture Time",
+        Dialog::AutoStackFocus { .. } => "Auto-Stack Focus Brackets",
         Dialog::CreatePreset { .. } => "Create Preset",
         Dialog::CopySettings { .. } => "Choose Edit Settings to Copy",
         Dialog::PasteSettings { .. } => "Paste Selected Settings",
@@ -149,6 +150,22 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context) {
                     ui.label(
                         egui::RichText::new(crate::i18n::tr_format!("Creates {} stacks from {} of {scope}", preview["stacks"], preview["photos"], scope = crate::i18n::tr(scope))).color(t.text_dim),
                     );
+                }
+                Dialog::AutoStackFocus { gap, same_exposure } => {
+                    ui.label(egui::RichText::new(crate::i18n::tr("Frames of a bracket are at most this far apart:")).color(t.text_label));
+                    let r = ui.add(
+                        egui::Slider::new(gap, 0.5..=60.0).logarithmic(true).custom_formatter(|v, _| format!("{v:.1} s")).custom_parser(|s| s.trim().trim_end_matches('s').trim().parse().ok()),
+                    );
+                    crate::widgets::register(ui.ctx(), "slider:autoStackFocusGap", r.rect);
+                    let r = ui.checkbox(same_exposure, crate::i18n::tr("Same exposure (leaves exposure brackets for HDR out)"));
+                    crate::widgets::register(ui.ctx(), "check:autoStackFocusSameExposure", r.rect);
+                    let (n, photos) = focus_bracket_preview(app, ui.ctx(), *gap, *same_exposure);
+                    let scope = if app.session.selection.ids.len() > 1 { "the selected photos" } else { "the photos in view" };
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr_format!("Finds {} focus bracket{} ({} photos) among {scope}", n, if n == 1 { "" } else { "s" }, photos, scope = crate::i18n::tr(scope)))
+                            .color(t.text_dim),
+                    );
+                    ui.label(egui::RichText::new(crate::i18n::tr("Each becomes a collapsed stack: select it to adjust or focus-stack the whole bracket.")).color(t.text_dim).size(11.0));
                 }
                 Dialog::Cull { reject_below, pick_best } => {
                     let n = app.session.selection.ids.len();
@@ -904,6 +921,28 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context) {
 
 /// Apply a dialog's action (also used by `ui.dialog.confirm`).
 /// `90` → `1 min 30 s`.
+/// How many focus brackets (and photos in them) Auto-Stack Focus Brackets would stack, worked out
+/// again only when the options, the catalog, the view or the selection change.
+fn focus_bracket_preview(app: &mut LightcraftApp, ctx: &egui::Context, gap: f32, same_exposure: bool) -> (usize, usize) {
+    use std::hash::{Hash, Hasher};
+    let (generation, _) = app.session.visible_shared();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (gap.to_bits(), same_exposure, app.session.catalog.revision, generation, &app.session.selection.ids).hash(&mut h);
+    let key = h.finish();
+    let id = egui::Id::new("autoStackFocusPreview");
+    if let Some((k, n, photos)) = ctx.data(|d| d.get_temp::<(u64, usize, usize)>(id))
+        && k == key
+    {
+        return (n, photos);
+    }
+    let rule = lightcraft_catalog::stacks::BracketRule { gap_secs: f64::from(gap), same_exposure, ..Default::default() };
+    let (scope, _) = app.session.bracket_scope(&json!({}), lightcraft_engine::stack_scope::Members::All);
+    let groups = app.session.catalog.focus_bracket_groups(&scope.ids, &rule);
+    let r = (groups.len(), groups.iter().map(Vec::len).sum());
+    ctx.data_mut(|d| d.insert_temp(id, (key, r.0, r.1)));
+    r
+}
+
 pub fn fmt_gap(v: f64) -> String {
     let v = v.round() as u64;
     match v {
@@ -1071,6 +1110,14 @@ pub fn confirm_dialog(app: &mut LightcraftApp, dlg: &Dialog) -> Result<serde_jso
         Dialog::RenameKeyword { from, to } => app.run("keyword.rename", json!({"from": from, "to": to})),
         Dialog::MergeKeywords { from, into } => app.run("keyword.merge", json!({"from": from, "into": into})),
         Dialog::AutoStack { gap } => app.run("stack.auto", json!({"gap": gap})),
+        Dialog::AutoStackFocus { gap, same_exposure } => {
+            let r = app.run("merge.detectFocusBrackets", json!({"gapSecs": gap, "sameExposure": same_exposure, "stack": true}));
+            if let Ok(v) = &r {
+                let (made, kept) = (v["stacked"].as_u64().unwrap_or(0), v["unchanged"].as_u64().unwrap_or(0));
+                app.ui.status = crate::i18n::tr_format!("Stacked {} focus bracket{} ({} already were)", made, if made == 1 { "" } else { "s" }, kept);
+            }
+            r
+        }
         Dialog::DenoiseModel { info, accepted } => crate::panels::denoise::install(app, info, *accepted),
         Dialog::FaceModel { path, info, accepted } => crate::panels::faces::install(app, path, info, *accepted),
         Dialog::AllMetadata { .. } | Dialog::SystemInfo { .. } | Dialog::WhatsNew => Ok(serde_json::Value::Null),

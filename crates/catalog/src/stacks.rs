@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{Catalog, CatalogError, Op, Photo, PhotoId, Result, Stack, StackId};
+use crate::{Catalog, CatalogError, Op, Photo, PhotoId, Result, Stack, StackId, StackKind};
 
 impl Catalog {
     pub fn stack(&self, id: StackId) -> Option<&Stack> {
@@ -81,7 +81,7 @@ impl Catalog {
             Some(keep) => ops.push(Op::SetStack { id: *keep, photos: order, collapsed }),
             None => {
                 let id = self.alloc_stack_id();
-                ops.push(Op::AddStack { stack: Stack { id, photos: order, collapsed } });
+                ops.push(Op::AddStack { stack: Stack { id, photos: order, collapsed, kind: StackKind::Plain } });
             }
         }
         Some(Op::Batch { ops })
@@ -91,6 +91,55 @@ impl Catalog {
     /// from), collapsed so the grid shows the result.
     pub fn stack_with_ops(&mut self, result: PhotoId, sources: &[PhotoId]) -> Option<Op> {
         self.group_ops(result, sources, true)
+    }
+
+    /// The stack all of `ids` belong to (`None` if they are not all in one stack, or `ids` is empty).
+    pub fn common_stack(&self, ids: &[PhotoId]) -> Option<StackId> {
+        let first = self.stack_of(*ids.first()?)?;
+        ids.iter().all(|p| first.photos.contains(p)).then_some(first.id)
+    }
+
+    /// The op that puts the unstacked `top` on top of `stack`, the other members keeping their order
+    /// (e.g. a merge result over the bracket it was made from). `None` if the stack is gone or `top`
+    /// is already stacked.
+    pub fn push_top_ops(&self, top: PhotoId, stack: StackId) -> Option<Op> {
+        let st = self.stacks.get(&stack)?;
+        if !self.photos.contains_key(&top) || self.stack_of(top).is_some() {
+            return None;
+        }
+        let mut photos = vec![top];
+        photos.extend(st.photos.iter().copied());
+        Some(Op::SetStack { id: st.id, photos, collapsed: st.collapsed })
+    }
+
+    /// Ops that make `group` a stack of its own of `kind` (collapsed, topped by its first photo),
+    /// taking its photos out of the stacks they are in. A stack that already holds exactly `group`
+    /// (plus merge results, e.g. a focus stack made from it) is kept and only given `kind`. `None`
+    /// when there is nothing to do or `group` has fewer than two photos of the library.
+    pub fn restack_ops(&mut self, group: &[PhotoId], kind: StackKind) -> Option<Op> {
+        let mut photos: Vec<PhotoId> = Vec::with_capacity(group.len());
+        for p in group {
+            if self.photos.contains_key(p) && !photos.contains(p) {
+                photos.push(*p);
+            }
+        }
+        if photos.len() < 2 {
+            return None;
+        }
+        if let Some(st) = self.common_stack(&photos).and_then(|id| self.stacks.get(&id)) {
+            let others_are_results = st
+                .photos
+                .iter()
+                .filter(|p| !photos.contains(p))
+                .all(|p| self.photos.get(p).is_some_and(|ph| crate::query::merged_kind(&ph.file_name).is_some()));
+            if others_are_results {
+                return (st.kind != kind).then_some(Op::SetStackKind { id: st.id, kind });
+            }
+        }
+        let mut ops = self.remove_from_stacks_ops(&photos);
+        let id = self.alloc_stack_id();
+        ops.push(Op::AddStack { stack: Stack { id, photos, collapsed: true, kind } });
+        Some(Op::Batch { ops })
     }
 
     /// Move `photo` `delta` places within its stack (towards the top for negative; index 0 is the
@@ -124,7 +173,7 @@ impl Catalog {
         }];
         if tail.len() >= 2 {
             let id = self.alloc_stack_id();
-            ops.push(Op::AddStack { stack: Stack { id, photos: tail.to_vec(), collapsed: st.collapsed } });
+            ops.push(Op::AddStack { stack: Stack { id, photos: tail.to_vec(), collapsed: st.collapsed, kind: st.kind } });
         }
         Some(Op::Batch { ops })
     }
@@ -247,15 +296,16 @@ impl Default for BracketRule {
 }
 
 impl Catalog {
-    /// Focus brackets among `ids`: runs of photos (not deleted, not merge results, with a capture
-    /// time) shot at most `gap_secs` apart with the same camera settings, in capture order (then
+    /// Focus brackets among `ids`: runs of photos (not deleted, not virtual copies, not merge
+    /// results, with a capture time) shot at most `gap_secs` apart with the same camera settings, in capture order (then
     /// file name: brackets are numbered in order and often share a second). Runs of at least
     /// `min_frames` are returned.
     pub fn focus_bracket_groups(&self, ids: &[PhotoId], rule: &BracketRule) -> Vec<Vec<PhotoId>> {
         let mut timed: Vec<(i64, String, PhotoId)> = ids
             .iter()
             .filter_map(|id| self.photos.get(id))
-            .filter(|p| !p.deleted && crate::query::merged_kind(&p.file_name).is_none())
+            // a virtual copy would put the same file in twice
+            .filter(|p| !p.deleted && p.copy_of.is_none() && crate::query::merged_kind(&p.file_name).is_none())
             .filter_map(|p| Some((iso_seconds(p.captured.as_deref()?)?, p.file_name.clone(), p.id)))
             .collect();
         timed.sort();
@@ -424,12 +474,21 @@ mod tests {
     fn stack_validation_and_permanent_delete() {
         let (mut c, ids) = cat(3, &[]);
         let id = c.alloc_stack_id();
-        assert!(c.apply(Op::AddStack { stack: Stack { id, photos: vec![ids[0]], collapsed: false } }).is_err(), "one photo");
-        assert!(c.apply(Op::AddStack { stack: Stack { id, photos: vec![ids[0], ids[0]], collapsed: false } }).is_err(), "duplicate");
-        assert!(c.apply(Op::AddStack { stack: Stack { id, photos: vec![ids[0], PhotoId(99)], collapsed: false } }).is_err(), "missing");
-        c.apply(Op::AddStack { stack: Stack { id, photos: vec![ids[0], ids[1]], collapsed: true } }).unwrap();
+        assert!(c.apply(Op::AddStack { stack: Stack { id, photos: vec![ids[0]], collapsed: false, kind: StackKind::Plain } }).is_err(), "one photo");
+        assert!(
+            c.apply(Op::AddStack { stack: Stack { id, photos: vec![ids[0], ids[0]], collapsed: false, kind: StackKind::Plain } }).is_err(),
+            "duplicate"
+        );
+        assert!(
+            c.apply(Op::AddStack { stack: Stack { id, photos: vec![ids[0], PhotoId(99)], collapsed: false, kind: StackKind::Plain } }).is_err(),
+            "missing"
+        );
+        c.apply(Op::AddStack { stack: Stack { id, photos: vec![ids[0], ids[1]], collapsed: true, kind: StackKind::Plain } }).unwrap();
         let id2 = c.alloc_stack_id();
-        assert!(c.apply(Op::AddStack { stack: Stack { id: id2, photos: vec![ids[1], ids[2]], collapsed: false } }).is_err(), "one stack per photo");
+        assert!(
+            c.apply(Op::AddStack { stack: Stack { id: id2, photos: vec![ids[1], ids[2]], collapsed: false, kind: StackKind::Plain } }).is_err(),
+            "one stack per photo"
+        );
         // deleting a member permanently dissolves the 2-photo stack; undo restores it
         let before = c.to_snapshot();
         let inv = c.apply(c.delete_permanently_ops(ids[1])).unwrap();
@@ -440,6 +499,63 @@ mod tests {
         let back = Catalog::from_snapshot(&c.to_snapshot()).unwrap();
         assert_eq!(back.stack(id), c.stack(id));
         assert_eq!(back.clone().alloc_stack_id(), c.clone().alloc_stack_id());
+    }
+
+    #[test]
+    fn restack_splits_brackets_out_and_keeps_merge_results_on_top() {
+        let (mut c, ids) = cat(9, &[]);
+        let (a, b) = (ids[0..4].to_vec(), ids[4..8].to_vec());
+        // one stack by capture time holding both brackets
+        let op = c.group_ops(ids[0], &ids[1..8], true).unwrap();
+        c.apply(op).unwrap();
+        assert_eq!(c.common_stack(&a), c.common_stack(&b));
+        assert_eq!(c.common_stack(&[ids[0], ids[8]]), None, "not all stacked together");
+        assert_eq!(c.common_stack(&[]), None);
+        let before = c.to_snapshot();
+        for g in [&a, &b] {
+            let op = c.restack_ops(g, StackKind::FocusBracket).unwrap();
+            c.apply(op).unwrap();
+        }
+        let (sa, sb) = (c.stack_of(a[0]).unwrap().clone(), c.stack_of(b[0]).unwrap().clone());
+        assert_eq!((sa.photos, sa.collapsed, sa.kind), (a.clone(), true, StackKind::FocusBracket));
+        assert_eq!((sb.photos, sb.kind), (b.clone(), StackKind::FocusBracket));
+        assert_eq!(c.stacks().count(), 2, "the time stack left with nothing is gone");
+        // again: nothing to do
+        assert!(c.restack_ops(&a, StackKind::FocusBracket).is_none());
+        // a merge result on top of a bracket stays there
+        let Some(p) = c.photos.get_mut(&ids[8]) else { return };
+        std::sync::Arc::make_mut(p).file_name = "0-Focus.dng".into();
+        let op = c.push_top_ops(ids[8], sa.id).unwrap();
+        c.apply(op).unwrap();
+        assert_eq!(c.stack_of(a[0]).unwrap().photos, [vec![ids[8]], a.clone()].concat(), "on top, the order kept");
+        assert!(c.stack_of(a[0]).unwrap().collapsed);
+        assert!(c.push_top_ops(ids[8], sb.id).is_none(), "already stacked");
+        assert!(c.restack_ops(&a, StackKind::FocusBracket).is_none());
+        // a plain stack holding exactly the bracket is only marked
+        let op = c.restack_ops(&b, StackKind::Plain).unwrap();
+        assert!(matches!(op, Op::SetStackKind { .. }));
+        c.apply(op).unwrap();
+        assert_eq!(c.stack_of(b[0]).unwrap().kind, StackKind::Plain);
+        // the snapshot keeps the kind; undoing the restacks restores the time stack
+        let back = Catalog::from_snapshot(&c.to_snapshot()).unwrap();
+        assert_eq!(back.stack(sa.id).map(|s| s.kind), Some(StackKind::FocusBracket));
+        let mut c2 = Catalog::from_snapshot(&before).unwrap();
+        let op = c2.restack_ops(&a, StackKind::FocusBracket).unwrap();
+        let inv = c2.apply(op).unwrap();
+        c2.apply(inv).unwrap();
+        let stacks = |c: &Catalog| c.stacks().cloned().collect::<Vec<_>>();
+        assert_eq!(stacks(&c2), stacks(&Catalog::from_snapshot(&before).unwrap()));
+        assert!(c2.restack_ops(&a[..1], StackKind::FocusBracket).is_none(), "one photo is no stack");
+    }
+
+    #[test]
+    fn virtual_copies_are_never_bracket_frames() {
+        let times = ["2026-04-01T10:00:00", "2026-04-01T10:00:00", "2026-04-01T10:00:01", "2026-04-01T10:00:01"];
+        let (mut c, ids) = cat(4, &times);
+        assert_eq!(c.focus_bracket_groups(&ids, &BracketRule::default()), vec![ids.clone()]);
+        let Some(p) = c.photos.get_mut(&ids[3]) else { return };
+        std::sync::Arc::make_mut(p).copy_of = Some(ids[2]);
+        assert_eq!(c.focus_bracket_groups(&ids, &BracketRule::default()), vec![ids[0..3].to_vec()]);
     }
 
     #[test]

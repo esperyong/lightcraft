@@ -18,7 +18,7 @@ use lightcraft_color::{D50, D65, Mat3, bradford};
 use lightcraft_geom::Orientation;
 use lightcraft_meta::Metadata;
 use lightcraft_raster::Rgb32f;
-use lightcraft_raw::{BlackLevel, ColorData, DngCompression, DngWriteOptions, OpcodeLists, RawData, RawFormat, RawImage, Rect, SemanticMask};
+use lightcraft_raw::{BlackLevel, ColorData, DngCompression, DngWriteOptions, Opcode, OpcodeLists, RawData, RawFormat, RawImage, Rect, SemanticMask};
 
 use crate::frame::FrameColor;
 use crate::{MergeError, Result};
@@ -70,6 +70,11 @@ pub struct DngExtra {
     pub masks: Vec<SemanticMask>,
     /// `DNGPrivateData`: the writing application's NUL-terminated name, then its data.
     pub private_data: Option<Vec<u8>>,
+    /// `RawDataUniqueID`: what makes this merge's file its own (see [`lightcraft_raw::DngWriteOptions`]).
+    pub unique_id: Option<[u8; 16]>,
+    /// Lens corrections (`WarpRectilinear`, `FixVignetteRadial`; others are dropped) for the image as
+    /// written: a merge that keeps its reference photo's geometry keeps its profile corrections.
+    pub lens_opcodes: Vec<Opcode>,
 }
 
 /// Encode `img` (scene-linear, 1.0 = source white) as a LinearRaw DNG.
@@ -139,11 +144,17 @@ pub fn write_linear_dng_with(
         color: cd,
         wb_multipliers: None,
         linearized: false,
-        opcodes: OpcodeLists::default(),
+        opcodes: OpcodeLists { list3: extra.lens_opcodes.into_iter().filter(Opcode::is_lens_correction).collect(), ..Default::default() },
         metadata: meta,
     };
     let compression = DngCompression::Deflate { tile: 256, half: samples == DngSamples::Half };
-    let opts = DngWriteOptions { compression, semantic_masks: extra.masks, private_data: extra.private_data, ..Default::default() };
+    let opts = DngWriteOptions {
+        compression,
+        semantic_masks: extra.masks,
+        private_data: extra.private_data,
+        raw_data_unique_id: extra.unique_id,
+        ..Default::default()
+    };
     lightcraft_raw::write_dng(&raw, &opts).map_err(|e| MergeError::Output(e.to_string()))
 }
 

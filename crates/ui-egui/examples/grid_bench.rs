@@ -83,7 +83,12 @@ fn library(n: usize, local: bool) -> Session {
     }
     for k in 0..n / 100 {
         let base = k as u64 * 100 + 1;
-        let stack = Stack { id: StackId(k as u64 + 1), photos: vec![PhotoId(base), PhotoId(base + 1), PhotoId(base + 2)], collapsed: false };
+        let stack = Stack {
+            id: StackId(k as u64 + 1),
+            photos: vec![PhotoId(base), PhotoId(base + 1), PhotoId(base + 2)],
+            collapsed: false,
+            kind: Default::default(),
+        };
         let _ = s.catalog.apply(Op::AddStack { stack });
     }
     if local {

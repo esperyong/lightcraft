@@ -209,5 +209,10 @@
   "•  {assumption}": "•  {assumption}",
   "Analyzed {} photos": "已分析 {} 张照片",
   "Analyzed {} photos ({} could not be analyzed)": "已分析 {} 张照片（{} 张无法分析）",
-  "Analyzing photos: {done} of {total}": "正在分析照片：{done}/{total}"
+  "Analyzing photos: {done} of {total}": "正在分析照片：{done}/{total}",
+  " · {} focus bracket{} stacked": " · 已将 {0} 组对焦包围堆叠{1:.0}",
+  "{g} stacks, merged one by one": "{g} 个堆叠，逐组合成",
+  "{n} photos (from a stack)": "{n} 张（来自堆叠）",
+  "Finds {} focus bracket{} ({} photos) among {scope}": "在{scope}中找到 {0} 组对焦包围（共 {2} 张）{1:.0}",
+  "Stacked {} focus bracket{} ({} already were)": "已堆叠 {0} 组对焦包围（{2} 组原已堆叠）{1:.0}"
 }

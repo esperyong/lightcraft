@@ -1454,5 +1454,20 @@
   "Focus stack retouched": "Стек фокуса отретуширован",
   "Erases strokes underneath: the stack as merged.": "Стирает штрихи под ним: стек как был объединён.",
   "The stack redone with that method (the first stroke takes a moment).": "Стек, пересчитанный этим методом (первый штрих занимает время).",
-  "One photo of the bracket, aligned to the stack.": "Один снимок вилки, выровненный по стеку."
+  "One photo of the bracket, aligned to the stack.": "Один снимок вилки, выровненный по стеку.",
+  "Stack focus brackets": "Собирать серии фокуса в стопки",
+  "Each focus bracket becomes a collapsed stack: adjust it and focus-stack it as one": "Каждая серия фокуса становится свёрнутой стопкой: правьте и сводите её как одно целое",
+  "Stack focus brackets on import": "Собирать серии фокуса в стопки при импорте",
+  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "Снимки, сделанные с интервалом до 2 с одной камерой, объективом и экспозицией, становятся одной свёрнутой стопкой — её можно править и сводить по фокусу целиком.",
+  "Use Source Settings": "Взять настройки исходных фото",
+  "The result takes the photos' white balance, tone, colour, detail and lens corrections (not crop, masks or geometry)": "Результат получает баланс белого, тон, цвет, детализацию и коррекцию объектива исходных фото (без кадрирования, масок и геометрии)",
+  "Auto-Stack Focus Brackets": "Автостопки серий фокуса",
+  "Auto-Stack Focus Brackets…": "Автостопки серий фокуса…",
+  "Frames of a bracket are at most this far apart:": "Кадры серии сняты не дальше друг от друга, чем:",
+  "Same exposure (leaves exposure brackets for HDR out)": "Одна экспозиция (без брекетинга экспозиции для HDR)",
+  "Each becomes a collapsed stack: select it to adjust or focus-stack the whole bracket.": "Каждая становится свёрнутой стопкой: выберите её, чтобы править или сводить по фокусу всю серию.",
+  "Focus bracket — click to expand (S)": "Серия фокуса — нажмите, чтобы развернуть (S)",
+  "Focus bracket — click to collapse (S)": "Серия фокуса — нажмите, чтобы свернуть (S)",
+  "Stack — click to expand (S)": "Стопка — нажмите, чтобы развернуть (S)",
+  "Stack — click to collapse (S)": "Стопка — нажмите, чтобы свернуть (S)"
 }

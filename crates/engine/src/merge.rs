@@ -16,7 +16,8 @@
 
 use std::sync::Arc;
 
-use lightcraft_catalog::{PhotoId, Source};
+use lightcraft_catalog::stacks::BracketRule;
+use lightcraft_catalog::{PhotoId, Source, StackId, StackKind};
 use lightcraft_develop::DevelopSettings;
 use lightcraft_merge::focus::{FocusOptions, FocusOrder, FocusResult, FocusStacker, Pass};
 use lightcraft_merge::{Deghost, Frame, HdrOptions, PanoOptions, Projection};
@@ -25,6 +26,8 @@ use lightcraft_raster::{Rgb32f, Rgba8};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::merge_look::SourceLook;
+use crate::stack_scope::{Members, StackScope};
 use crate::{EngineError, Result, Session};
 
 /// Long edge of the frames of a preview merge.
@@ -62,6 +65,10 @@ fn yes() -> bool {
 }
 
 impl MergeKind {
+    /// A panorama (its picture is a projection: lens geometry doesn't carry over).
+    pub fn is_pano(&self) -> bool {
+        matches!(self, MergeKind::Panorama { .. } | MergeKind::HdrPanorama { .. })
+    }
     fn suffix(&self) -> &'static str {
         match self {
             MergeKind::Hdr { .. } => "HDR",
@@ -79,13 +86,17 @@ impl MergeKind {
 }
 
 /// Options that apply after the merge.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MergeFinish {
-    /// Run Auto Settings on the result.
-    pub auto_settings: bool,
-    /// Stack the result on top of its sources (collapsed); the result's caption also lists them.
-    pub stack: bool,
+    /// Run Auto Settings on the result. `None`: unless it takes edited sources' settings.
+    pub auto_settings: Option<bool>,
+    /// The result takes the settings of the reference photo when the sources were edited
+    /// ([`crate::merge_look`]).
+    pub source_settings: bool,
+    /// Stack the result on top of its sources; the result's caption also lists them. `None`:
+    /// when the sources are all in one stack (e.g. a focus bracket), the result goes on its top.
+    pub stack: Option<bool>,
     /// Preview only: tint deghosted areas red.
     pub show_overlay: bool,
     /// Preview only (focus stack): show the depth map instead of the result.
@@ -93,6 +104,12 @@ pub struct MergeFinish {
     /// Focus stack: also write the depth map here (16-bit grey PNG; 0 = first photo of the focus
     /// order, white = last).
     pub depth_path: Option<String>,
+}
+
+impl Default for MergeFinish {
+    fn default() -> Self {
+        MergeFinish { auto_settings: None, source_settings: true, stack: None, show_overlay: false, show_depth: false, depth_path: None }
+    }
 }
 
 /// Reads a source photo's bytes (by catalog path).
@@ -110,6 +127,13 @@ pub struct MergeJob {
     /// The largest source size (catalog pixels, upright): previews scale pixel radii by it, focus
     /// stacks size their decode window by it.
     pub size: (usize, usize),
+    /// The stack all sources were in when the merge was planned.
+    pub one_stack: Option<StackId>,
+    /// The edited sources' settings (when the result takes them, [`MergeFinish::source_settings`]).
+    pub looks: Vec<(PhotoId, SourceLook)>,
+    /// The result's `RawDataUniqueID`: merging the same photos again makes a new photo, not a
+    /// duplicate the library would skip (e.g. after the sources were adjusted).
+    pub unique_id: [u8; 16],
 }
 
 /// What a merge produced.
@@ -126,6 +150,8 @@ pub struct MergeOutput {
     pub depth: Option<lightcraft_raster::Plane>,
     /// Focus stacks: what the stack was made from (saved beside the DNG, for retouching).
     pub focus_project: Option<crate::focus_retouch::FocusProject>,
+    /// The source whose settings the result takes (see [`MergeJob::settings_source`]).
+    pub settings_from: Option<PhotoId>,
 }
 
 pub type ProgressFn<'a> = dyn Fn(f32, &str) -> bool + Sync + 'a;
@@ -164,6 +190,8 @@ impl MergeJob {
         let sub = |a: f32, b: f32| move |f: f32, s: &str| progress(a + (b - a) * f, s);
         let mut depth = None;
         let mut focus_project = None;
+        // a focus stack's cut of its reference frame: (x, y, w, h) normalised, the frame's size
+        let mut focus_cut = None;
         // `look`: the source whose colours the result keeps (its camera look goes with the DNG)
         let (image, color, orientation, metadata, baseline, samples, crop, mut info, ghost, look) = match &self.kind {
             MergeKind::FocusStack { focus, .. } => {
@@ -175,6 +203,9 @@ impl MergeJob {
                     focus_project = Some(crate::focus_retouch::FocusProject::of(&r, &self.sources, focus));
                 }
                 depth = Some(r.depth);
+                let (fw, fh) = (r.frame_size.0.max(1) as f64, r.frame_size.1.max(1) as f64);
+                let c = r.crop;
+                focus_cut = Some(([c.x as f64 / fw, c.y as f64 / fh, c.w as f64 / fw, c.h as f64 / fh], fw, fh));
                 let look = r.reference;
                 (r.image, r.color, r.orientation, r.metadata, r.baseline_exposure, lightcraft_merge::DngSamples::U16, None, info, None, look)
             }
@@ -272,7 +303,7 @@ impl MergeJob {
             return Err("cancelled".into());
         }
         let mut metadata = metadata;
-        if self.finish.stack {
+        if self.stacks_result() {
             let names: Vec<&str> =
                 self.sources.iter().map(|(_, p)| std::path::Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or(p)).collect();
             metadata.caption = Some(merged_caption(&names));
@@ -282,40 +313,68 @@ impl MergeJob {
             (MergeKind::FocusStack { depth_map: true, .. }, Some(d)) => lightcraft_merge::focus::depth_mask(d).into_iter().collect(),
             _ => Vec::new(),
         };
-        let private_data = match &color {
-            lightcraft_merge::FrameColor::Camera(_) => self.camera_look(look),
-            lightcraft_merge::FrameColor::Linear { .. } => None,
+        // the reference photo's camera look and lens corrections go with the DNG
+        let reference = self.sources.get(look).and_then(|(_, p)| (self.read)(p).ok()).filter(|b| lightcraft_raw::probe(b).is_some());
+        let private_data = match (&color, &reference) {
+            (lightcraft_merge::FrameColor::Camera(_), Some(bytes)) => camera_look(bytes),
+            _ => None,
         };
-        let extra = lightcraft_merge::DngExtra { masks, private_data };
+        let lens_opcodes = reference.as_deref().map(|b| self.lens_opcodes(b, focus_cut, (image.width, image.height))).unwrap_or_default();
+        let extra = lightcraft_merge::DngExtra { masks, private_data, unique_id: Some(self.unique_id), lens_opcodes };
         let dng = lightcraft_merge::write_linear_dng_with(&image, &color, orientation, &metadata, baseline, samples, extra).map_err(err)?;
         info["width"] = json!(image.width);
         info["height"] = json!(image.height);
+        let settings = self.settings_source(look);
+        if let Some((id, _)) = settings {
+            info["settingsFrom"] = json!(id.0);
+        }
         let preview = match (self.preview, depth.as_ref().filter(|_| self.finish.show_depth)) {
             (Some(_), Some(d)) => Some(depth_preview(d)),
             (Some(edge), None) => {
-                Some(render_preview(&dng, edge, self.finish.auto_settings, crop, ghost.as_ref().filter(|_| self.finish.show_overlay))?)
+                let look = settings.map(|(_, l)| (l, self.kind.is_pano()));
+                Some(render_preview(&dng, edge, self.auto_settings(), look, crop, ghost.as_ref().filter(|_| self.finish.show_overlay))?)
             }
             (None, _) => None,
         };
         progress(1.0, "Done");
-        Ok(MergeOutput { dng, preview, crop, info, depth, focus_project })
+        Ok(MergeOutput { dng, preview, crop, info, depth, focus_project, settings_from: settings.map(|(id, _)| *id) })
     }
 }
 
 impl MergeJob {
-    /// The camera look of source `index` when it is a raw without a colour matrix (fitted to its
-    /// own JPEG, as when the photo is opened), as a merged DNG's private data: the merge then
-    /// opens looking like that photo.
-    fn camera_look(&self, index: usize) -> Option<Vec<u8>> {
-        let (_, path) = self.sources.get(index)?;
-        let bytes = (self.read)(path).ok()?;
-        lightcraft_raw::probe(&bytes)?;
-        let mut raw = lightcraft_raw::decode(&bytes).ok()?;
-        // as when the photo is opened: the look's sensor proxy is binned without lens corrections
-        raw.opcodes.list3.retain(|op| !op.is_lens_correction());
-        let t = lightcraft_raw::color::camera_transform(&raw, lightcraft_raw::color::as_shot_white_xy(&raw));
-        let look = crate::camera_preview::fit_preview(&raw, &bytes, &t)?;
-        crate::camera_preview::private_data(&look)
+    /// Whether the result is stacked with its sources: as asked, else when they were all in one
+    /// stack.
+    pub fn stacks_result(&self) -> bool {
+        self.finish.stack.unwrap_or(self.one_stack.is_some())
+    }
+
+    /// Whether Auto Settings runs on the result: as asked, else unless it takes edited sources'
+    /// settings.
+    pub fn auto_settings(&self) -> bool {
+        self.finish.auto_settings.unwrap_or(self.looks.is_empty())
+    }
+
+    /// The source whose settings the result takes: the reference photo (source `reference`: HDR's
+    /// middle exposure, the focus stack's alignment reference, the panorama's first photo) when it
+    /// was edited, else the first edited source.
+    pub fn settings_source(&self, reference: usize) -> Option<&(PhotoId, SourceLook)> {
+        let edited = |id: PhotoId| self.looks.iter().find(|(x, _)| *x == id);
+        self.sources.get(reference).and_then(|(id, _)| edited(*id)).or_else(|| self.sources.iter().find_map(|(id, _)| edited(*id)))
+    }
+
+    /// The reference raw's lens corrections (`bytes`) as opcodes for the merged `size` image: an HDR
+    /// keeps the reference frame's geometry (as stored, unoriented), a focus stack is a cut
+    /// (`focus_cut`) of the oriented frame. A panorama's picture is a projection: none.
+    fn lens_opcodes(&self, bytes: &[u8], focus_cut: Option<([f64; 4], f64, f64)>, size: (usize, usize)) -> Vec<lightcraft_raw::Opcode> {
+        let Ok(info) = lightcraft_raw::probe_info(bytes) else { return Vec::new() };
+        let lens = match (&self.kind, focus_cut) {
+            (MergeKind::Hdr { .. }, _) => crate::files::embedded_lens_frame(&info).map(|(l, _, _)| l),
+            (MergeKind::FocusStack { .. }, Some((cut, w, h))) => {
+                crate::files::embedded_lens(&info).map(|l| lightcraft_pipeline::optics::crop_lens(&l, cut, w, h))
+            }
+            _ => None,
+        };
+        lens.map(|l| crate::files::lens_opcodes(&l, size.0, size.1)).unwrap_or_default()
     }
 
     /// Frames decoded at once (and held while the stacker works on the previous ones): as many as
@@ -548,17 +607,35 @@ pub fn detect_bracket(frames: &[Frame]) -> Option<usize> {
     (2..=n / 2).find(|&b| n.is_multiple_of(b) && (0..n).all(|k| (ev[k] - ev[k % b]).abs() < 0.2) && (1..b).any(|k| (ev[k] - ev[0]).abs() > 0.5))
 }
 
-/// Render a merged DNG like the library will show it (default raw settings, optionally Auto
-/// Settings and the auto crop), with the deghost overlay tinted red.
+/// The camera look of a raw without a colour matrix (fitted to its own JPEG, as when the photo is
+/// opened), as a merged DNG's private data: the merge then opens looking like that photo.
+fn camera_look(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut raw = lightcraft_raw::decode(bytes).ok()?;
+    // as when the photo is opened: the look's sensor proxy is binned without lens corrections
+    raw.opcodes.list3.retain(|op| !op.is_lens_correction());
+    let t = lightcraft_raw::color::camera_transform(&raw, lightcraft_raw::color::as_shot_white_xy(&raw));
+    let look = crate::camera_preview::fit_preview(&raw, bytes, &t)?;
+    crate::camera_preview::private_data(&look)
+}
+
+/// Render a merged DNG like the library will show it (default raw settings with the sources' look
+/// — `look`: theirs, and whether it's a panorama — optionally Auto Settings and the auto crop),
+/// with the deghost overlay tinted red.
 fn render_preview(
     dng: &[u8],
     edge: usize,
     auto: bool,
+    look: Option<(&SourceLook, bool)>,
     crop: Option<[f64; 4]>,
     ghost: Option<&lightcraft_raster::Plane>,
 ) -> std::result::Result<Rgba8, String> {
     let (src, info) = crate::files::load_bytes(dng, edge)?;
     let mut s = DevelopSettings::for_raw(info.as_shot_temp, info.as_shot_tint);
+    // as import sets it up: embedded lens corrections on when the file has them
+    s.optics.lens_profile = info.lens.is_some();
+    if let Some((l, pano)) = look {
+        s = crate::merge_look::inherit(&s, l, (info.as_shot_temp, info.as_shot_tint), pano);
+    }
     if auto {
         apply_auto(&mut s, &src, &info);
     }
@@ -644,8 +721,9 @@ pub fn parse(id: &str, p: &Value) -> Result<(MergeKind, MergeFinish)> {
         _ => MergeKind::HdrPanorama { hdr, pano, bracket: p.get("bracket").and_then(Value::as_u64).unwrap_or(0) as usize },
     };
     let finish = MergeFinish {
-        auto_settings: p.get("autoSettings").and_then(Value::as_bool).unwrap_or(true),
-        stack: p.get("stack").and_then(Value::as_bool).unwrap_or(false),
+        auto_settings: p.get("autoSettings").and_then(Value::as_bool),
+        source_settings: p.get("sourceSettings").and_then(Value::as_bool).unwrap_or(true),
+        stack: p.get("stack").and_then(Value::as_bool),
         show_overlay: p.get("showOverlay").and_then(Value::as_bool).unwrap_or(false),
         show_depth: p.get("showDepth").and_then(Value::as_bool).unwrap_or(false),
         depth_path: p.get("depthPath").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string),
@@ -748,7 +826,45 @@ impl Session {
                 }
             }
         }
-        Ok(MergeJob { kind, finish, sources, preview: edge, read, size })
+        let one_stack = self.catalog.common_stack(&sources.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+        let looks = if finish.source_settings { self.source_looks(ids) } else { Vec::new() };
+        let unique_id = self.merge_id(&sources);
+        Ok(MergeJob { kind, finish, sources, preview: edge, read, size, one_stack, looks, unique_id })
+    }
+
+    /// 16 bytes no other merge gets: the session clock, a counter and the sources, hashed.
+    fn merge_id(&self, sources: &[(PhotoId, String)]) -> [u8; 16] {
+        use std::hash::{Hash, Hasher};
+        static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let now = (self.clock)();
+        let half = |salt: u8| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (salt, &now, n, sources).hash(&mut h);
+            h.finish().to_le_bytes()
+        };
+        let (a, b) = (half(0), half(1));
+        let mut id = [0u8; 16];
+        id[..8].copy_from_slice(&a);
+        id[8..].copy_from_slice(&b);
+        id
+    }
+
+    /// The settings of the edited photos among `ids`, for a merge result to take.
+    pub fn source_looks(&self, ids: &[PhotoId]) -> Vec<(PhotoId, SourceLook)> {
+        ids.iter()
+            .filter_map(|id| self.catalog.photo(*id))
+            .filter(|p| p.is_edited())
+            .map(|p| {
+                let info = self.source_info(p.id);
+                let look = SourceLook {
+                    settings: p.develop.clone(),
+                    relative_wb: !info.raw || info.relative_wb,
+                    as_shot: (info.as_shot_temp, info.as_shot_tint),
+                };
+                (p.id, look)
+            })
+            .collect()
     }
 
     /// Write a finished (non-preview) merge next to its first source, import it, select it and
@@ -767,14 +883,28 @@ impl Session {
             .copied()
             .map(PhotoId)
             .ok_or_else(|| EngineError::Other(format!("the merged file {path} could not be imported: {:?}", report.failed)))?;
-        if job.finish.stack {
+        if job.stacks_result() {
             let sources: Vec<PhotoId> = job.sources.iter().map(|(p, _)| *p).collect();
-            if let Some(op) = self.catalog.stack_with_ops(id, &sources) {
+            // on top of the stack the sources came from (unless it changed meanwhile), its order kept
+            let op = match job.one_stack.filter(|sid| self.catalog.common_stack(&sources) == Some(*sid)) {
+                Some(sid) => self.catalog.push_top_ops(id, sid),
+                None => self.catalog.stack_with_ops(id, &sources),
+            };
+            if let Some(op) = op {
                 self.commit("Stack with Sources", op)?;
             }
         }
         self.selection = crate::Selection::single(id);
-        if job.finish.auto_settings {
+        if let Some((_, look)) = out.settings_from.and_then(|from| job.looks.iter().find(|(x, _)| *x == from))
+            && let Some(base) = self.develop_of(id)
+        {
+            let shot = self.source_info(id);
+            let d = crate::merge_look::inherit(&base, look, (shot.as_shot_temp, shot.as_shot_tint), job.kind.is_pano());
+            if d != *base {
+                self.set_develop(id, d, "Settings from Sources")?;
+            }
+        }
+        if job.auto_settings() {
             self.execute("develop.auto", &json!({}))?;
         }
         if let Some(c) = out.crop
@@ -784,9 +914,9 @@ impl Session {
             d.crop.geometry.rect = lightcraft_geom::Rect::from_xywh(c[0], c[1], c[2], c[3]);
             self.set_develop(id, d, "Auto Crop")?;
         }
+        // what the stack was made from, for retouching it later (a stack without it still works)
         let mut info = out.info;
         if let Some(project) = &out.focus_project {
-            // what the stack was made from, for retouching it later (a stack without it still works)
             match serde_json::to_string_pretty(project) {
                 Ok(text) => match crate::export::write_file_durable(&crate::focus_retouch::project_path(&path), text.as_bytes()) {
                     Ok(()) => info["project"] = json!(crate::focus_retouch::project_path(&path)),
@@ -811,5 +941,59 @@ impl Session {
         let job = self.plan_merge(kind, finish, ids, false)?;
         let out = job.run(&|_, _| true).map_err(EngineError::Other)?;
         self.finish_merge(&job, out)
+    }
+
+    /// Merge each group on its own, one after the other; a group that fails is reported and the
+    /// others still run → `{results: [{group, id, path, …}], failed: [{group, error}], count}`.
+    /// The results end up selected.
+    pub fn merge_groups(&mut self, kind: &MergeKind, finish: &MergeFinish, groups: &[Vec<PhotoId>]) -> Value {
+        let (mut results, mut failed) = (Vec::new(), Vec::new());
+        for g in groups {
+            let ids: Vec<u64> = g.iter().map(|id| id.0).collect();
+            match self.merge_now(kind.clone(), finish.clone(), g) {
+                Ok(mut r) => {
+                    r["group"] = json!(ids);
+                    results.push(r);
+                }
+                Err(e) => failed.push(json!({"group": ids, "error": e.to_string()})),
+            }
+        }
+        // all the results selected (each merge selected its own)
+        let made: Vec<PhotoId> = results.iter().filter_map(|r| r["id"].as_u64()).map(PhotoId).collect();
+        if made.len() > 1 {
+            self.selection = crate::Selection { active: made.first().copied(), ids: made };
+        }
+        json!({"results": results, "failed": failed, "count": groups.len()})
+    }
+
+    /// The photos to look for focus brackets in, and whether they are the selection: `ids`, else
+    /// the selection when two or more photos (grid cells) are selected, else the photos shown —
+    /// collapsed stacks counting as their members (see [`crate::stack_scope`]). One selected cell
+    /// is the usual state of the grid, not a choice of where to look.
+    pub fn bracket_scope(&mut self, p: &Value, members: Members) -> (StackScope, bool) {
+        if crate::stack_scope::explicit_ids(p) || self.selection.ids.len() >= 2 {
+            return (self.stack_targets(p, members), true);
+        }
+        let vis = self.visible_cloned();
+        (self.expand_stacks(&vis, members), false)
+    }
+
+    /// The focus brackets to stack one by one (`merge.focusStackBatch`, the app's Focus Stack Each
+    /// Bracket): each selected collapsed stack — or with no selection, each focus-bracket stack in
+    /// view — as it is, and the brackets found among the other photos (`rule`).
+    pub fn focus_batch_groups(&mut self, p: &Value, rule: &BracketRule) -> Vec<Vec<PhotoId>> {
+        let (scope, selected) = self.bracket_scope(p, Members::Sources);
+        let mut groups = Vec::new();
+        let mut rest = scope.loose.clone();
+        for (sid, m) in &scope.stacks {
+            let take = selected || self.catalog.stack(*sid).is_some_and(|st| st.kind == StackKind::FocusBracket);
+            if take && m.len() >= 2 {
+                groups.push(m.clone());
+            } else {
+                rest.extend(m.iter().copied());
+            }
+        }
+        groups.extend(self.catalog.focus_bracket_groups(&rest, rule));
+        groups
     }
 }

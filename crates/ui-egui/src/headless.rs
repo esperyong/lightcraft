@@ -396,6 +396,91 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Issue #24: Photo ▸ Stack ▸ Auto-Stack Focus Brackets… makes each bracket a collapsed stack;
+    /// one selected cell stands for its whole bracket in Photo Merge ▸ Focus Stack…, two cells are
+    /// merged one by one, and each result goes on top of its own stack.
+    #[test]
+    fn a_collapsed_focus_bracket_is_merged_from_its_cell() {
+        use lightcraft_catalog::{PhotoId, StackKind};
+        let dir = std::env::temp_dir().join(format!("lc-ui-focus-stacks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut paths = Vec::new();
+        for (b, start) in [(0, 0), (1, 30)] {
+            for (i, d) in lightcraft_merge::synth::focus_bracket_dngs(160, 110, 3, start).unwrap().into_iter().enumerate() {
+                let p = dir.join(format!("C{b}_{i}.dng"));
+                std::fs::write(&p, d).unwrap();
+                paths.push(p.to_string_lossy().to_string());
+            }
+        }
+        let services = crate::Services { png: None, ..Default::default() };
+        let app = LightcraftApp::new(lightcraft_engine::Session::new().with_fs(), services);
+        let mut h = Headless::new(app, [1300.0, 900.0], 1.0);
+        let t = Duration::from_secs(10);
+        h.request("engine.execute", json!({"command": "library.import", "params": {"paths": paths}}), t);
+        let r = h.request("ui.menu.invoke", json!({"command": "dialog.autoStackFocus"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::AutoStackFocus { .. })));
+        h.request("ui.dialog.confirm", json!({}), t);
+        let focus = h.app.session.catalog.stacks().filter(|st| st.kind == StackKind::FocusBracket && st.collapsed).count();
+        assert_eq!((focus, h.app.session.visible_cloned().len()), (2, 2));
+        // one cell: the menu item is on, the dialog takes the bracket's three photos
+        let top = h.app.session.visible_cloned()[0];
+        h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [top.0]}}), t);
+        assert!(crate::menus::ui_enabled(&h.app, "dialog.mergeFocusStack"));
+        let r = h.request("ui.menu.invoke", json!({"command": "dialog.mergeFocusStack"}), t);
+        assert_eq!((r["result"]["photos"].as_u64(), r["result"]["fromStack"].as_bool()), (Some(3), Some(true)), "{r}");
+        let Some(crate::state::Dialog::Merge { opts }) = &h.app.ui.dialog else { panic!("no merge dialog") };
+        assert!(
+            crate::merge::creates_stack(&h.app, opts) && crate::merge::auto_settings(&h.app, opts),
+            "on top of the stack; nothing edited: Auto Settings"
+        );
+        h.request("ui.dialog.cancel", json!({}), t);
+        // both cells: merged one by one, each result on top of its own stack, both selected
+        h.request("engine.execute", json!({"command": "library.selectAll"}), t);
+        let r = h.request("ui.menu.invoke", json!({"command": "dialog.mergeFocusStack"}), t);
+        assert_eq!(r["result"]["stacks"], 2, "{r}");
+        h.request("ui.dialog.confirm", json!({}), t);
+        assert!(h.step_until(Duration::from_secs(120), |h| !h.app.merge.busy() && h.app.merge.queue.is_empty()));
+        let made: Vec<PhotoId> = h.app.session.catalog.photos().filter(|p| p.file_name.contains("-Focus")).map(|p| p.id).collect();
+        assert_eq!(made.len(), 2);
+        for id in &made {
+            let st = h.app.session.catalog.stack_of(*id).expect("stacked");
+            assert_eq!((st.top(), st.photos.len(), st.kind), (*id, 4, StackKind::FocusBracket));
+        }
+        let mut sel = h.app.session.selection.ids.clone();
+        sel.sort();
+        assert_eq!(sel, made);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #24: with Settings ▸ Import ▸ Stack focus brackets on, an import in the app stacks the
+    /// brackets it brings in, across its batches, in its undo step.
+    #[test]
+    fn an_import_in_the_app_stacks_focus_brackets() {
+        let dir = std::env::temp_dir().join(format!("lc-ui-import-stacks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (b, start) in [(0, 0), (1, 30)] {
+            for (i, d) in lightcraft_merge::synth::focus_bracket_dngs(96, 64, 3, start).unwrap().into_iter().enumerate() {
+                std::fs::write(dir.join(format!("I{b}_{i}.dng")), d).unwrap();
+            }
+        }
+        let services = crate::Services { png: None, ..Default::default() };
+        let app = LightcraftApp::new(lightcraft_engine::Session::new().with_fs(), services);
+        let mut h = Headless::new(app, [1300.0, 900.0], 1.0);
+        let t = Duration::from_secs(10);
+        h.request("engine.execute", json!({"command": "library.preferences", "params": {"import": {"stackFocusBrackets": true}}}), t);
+        crate::import::start_paths(&mut h.app, vec![dir.to_string_lossy().to_string()]).unwrap();
+        assert!(h.step_until(Duration::from_secs(60), |h| h.app.import.is_none()));
+        assert_eq!(h.app.session.catalog.len(), 6);
+        assert_eq!(h.app.session.catalog.stacks().count(), 2);
+        assert_eq!(h.app.session.visible_cloned().len(), 2);
+        h.request("engine.execute", json!({"command": "edit.undo"}), t);
+        assert_eq!((h.app.session.catalog.len(), h.app.session.catalog.stacks().count()), (0, 0), "one undo step");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Photo Merge ▸ Retouch Focus Stack: a stroke painted on the canvas from method C, applied
     /// at full size in the background, is saved in the stack's project.
     #[test]

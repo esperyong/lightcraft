@@ -87,6 +87,9 @@ pub struct DngWriteOptions {
     /// `DNGPrivateData` (IFD0): an application's own data, starting with its NUL-terminated name
     /// (DNG spec); read back with [`crate::dng_private_data`]. At most [`MAX_PRIVATE_DATA`] bytes.
     pub private_data: Option<Vec<u8>>,
+    /// `RawDataUniqueID`: 16 bytes naming this raw data (e.g. one photo merge, so that merging the
+    /// same photos again makes another file, not a duplicate of the first).
+    pub raw_data_unique_id: Option<[u8; 16]>,
 }
 
 /// Largest `DNGPrivateData` written or read.
@@ -94,7 +97,14 @@ pub const MAX_PRIVATE_DATA: usize = 4 << 20;
 
 impl Default for DngWriteOptions {
     fn default() -> Self {
-        Self { compression: DngCompression::Lj92 { tile: 256 }, order: ByteOrder::Little, xmp: None, semantic_masks: Vec::new(), private_data: None }
+        Self {
+            compression: DngCompression::Lj92 { tile: 256 },
+            order: ByteOrder::Little,
+            xmp: None,
+            semantic_masks: Vec::new(),
+            private_data: None,
+            raw_data_unique_id: None,
+        }
     }
 }
 
@@ -193,6 +203,9 @@ pub fn write_dng(raw: &RawImage, opts: &DngWriteOptions) -> Result<Vec<u8>> {
             return Err(RawError::Limit("DNG private data (size, or no NUL-terminated name)"));
         }
         ifd.set(t::DNG_PRIVATE_DATA, Value::Byte(p.clone()));
+    }
+    if let Some(id) = &opts.raw_data_unique_id {
+        ifd.set(t::RAW_DATA_UNIQUE_ID, Value::Byte(id.to_vec()));
     }
 
     if let Some(cfa) = &raw.cfa {

@@ -148,6 +148,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     "photos": st.photos.iter().map(|p| p.0).collect::<Vec<_>>(),
                     "position": st.position(id),
                     "collapsed": st.collapsed,
+                    "kind": st.kind.as_str(),
                 });
             }
             Ok(v)

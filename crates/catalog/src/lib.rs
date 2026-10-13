@@ -166,6 +166,11 @@ pub enum Op {
         photos: Vec<PhotoId>,
         collapsed: bool,
     },
+    /// Say what a stack groups (e.g. a focus bracket).
+    SetStackKind {
+        id: StackId,
+        kind: StackKind,
+    },
     /// Set a photo's capture time (ISO 8601 local time; `None` = unknown).
     SetCaptured {
         id: PhotoId,
@@ -570,6 +575,10 @@ impl Catalog {
                 let old = Op::SetStack { id, photos: std::mem::replace(&mut s.photos, photos), collapsed: s.collapsed };
                 s.collapsed = collapsed;
                 old
+            }
+            Op::SetStackKind { id, kind } => {
+                let s = self.stacks.get_mut(&id).ok_or(CatalogError::NoStack(id))?;
+                Op::SetStackKind { id, kind: std::mem::replace(&mut s.kind, kind) }
             }
             Op::SetAnalysis { id, analysis } => {
                 let p = self.photo_mut(id)?;

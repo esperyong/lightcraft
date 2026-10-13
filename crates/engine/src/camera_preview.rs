@@ -1472,7 +1472,7 @@ mod tests {
     fn dng_with(private_data: Option<Vec<u8>>) -> Vec<u8> {
         let img = Rgb32f::from_fn(48, 32, |x, y| [0.2 + x as f32 / 100.0, 0.3, 0.25 + y as f32 / 100.0]);
         let color = lightcraft_merge::FrameColor::Linear { to_xyz_d50: bradford(D65, D50).mul(&REC2020.to_xyz()) };
-        let extra = lightcraft_merge::DngExtra { masks: Vec::new(), private_data };
+        let extra = lightcraft_merge::DngExtra { masks: Vec::new(), private_data, unique_id: None, lens_opcodes: Vec::new() };
         lightcraft_merge::write_linear_dng_with(
             &img,
             &color,

@@ -16,7 +16,8 @@
 
 use std::sync::Arc;
 
-use lightcraft_catalog::{PhotoId, Source};
+use lightcraft_catalog::stacks::BracketRule;
+use lightcraft_catalog::{PhotoId, Source, StackId, StackKind};
 use lightcraft_develop::DevelopSettings;
 use lightcraft_merge::focus::{FocusOptions, FocusOrder, FocusResult, FocusStacker, Pass};
 use lightcraft_merge::{Deghost, Frame, HdrOptions, PanoOptions, Projection};
@@ -25,6 +26,7 @@ use lightcraft_raster::{Rgb32f, Rgba8};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::stack_scope::{Members, StackScope};
 use crate::{EngineError, Result, Session};
 
 /// Long edge of the frames of a preview merge.
@@ -84,8 +86,9 @@ impl MergeKind {
 pub struct MergeFinish {
     /// Run Auto Settings on the result.
     pub auto_settings: bool,
-    /// Stack the result on top of its sources (collapsed); the result's caption also lists them.
-    pub stack: bool,
+    /// Stack the result on top of its sources; the result's caption also lists them. `None`:
+    /// when the sources are all in one stack (e.g. a focus bracket), the result goes on its top.
+    pub stack: Option<bool>,
     /// Preview only: tint deghosted areas red.
     pub show_overlay: bool,
     /// Preview only (focus stack): show the depth map instead of the result.
@@ -110,6 +113,8 @@ pub struct MergeJob {
     /// The largest source size (catalog pixels, upright): previews scale pixel radii by it, focus
     /// stacks size their decode window by it.
     pub size: (usize, usize),
+    /// The stack all sources were in when the merge was planned.
+    pub one_stack: Option<StackId>,
 }
 
 /// What a merge produced.
@@ -272,7 +277,7 @@ impl MergeJob {
             return Err("cancelled".into());
         }
         let mut metadata = metadata;
-        if self.finish.stack {
+        if self.stacks_result() {
             let names: Vec<&str> =
                 self.sources.iter().map(|(_, p)| std::path::Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or(p)).collect();
             metadata.caption = Some(merged_caption(&names));
@@ -303,6 +308,12 @@ impl MergeJob {
 }
 
 impl MergeJob {
+    /// Whether the result is stacked with its sources: as asked, else when they were all in one
+    /// stack.
+    pub fn stacks_result(&self) -> bool {
+        self.finish.stack.unwrap_or(self.one_stack.is_some())
+    }
+
     /// The camera look of source `index` when it is a raw without a colour matrix (fitted to its
     /// own JPEG, as when the photo is opened), as a merged DNG's private data: the merge then
     /// opens looking like that photo.
@@ -645,7 +656,7 @@ pub fn parse(id: &str, p: &Value) -> Result<(MergeKind, MergeFinish)> {
     };
     let finish = MergeFinish {
         auto_settings: p.get("autoSettings").and_then(Value::as_bool).unwrap_or(true),
-        stack: p.get("stack").and_then(Value::as_bool).unwrap_or(false),
+        stack: p.get("stack").and_then(Value::as_bool),
         show_overlay: p.get("showOverlay").and_then(Value::as_bool).unwrap_or(false),
         show_depth: p.get("showDepth").and_then(Value::as_bool).unwrap_or(false),
         depth_path: p.get("depthPath").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string),
@@ -748,7 +759,8 @@ impl Session {
                 }
             }
         }
-        Ok(MergeJob { kind, finish, sources, preview: edge, read, size })
+        let one_stack = self.catalog.common_stack(&sources.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+        Ok(MergeJob { kind, finish, sources, preview: edge, read, size, one_stack })
     }
 
     /// Write a finished (non-preview) merge next to its first source, import it, select it and
@@ -760,33 +772,55 @@ impl Session {
             .map_err(|e| EngineError::Other(format!("could not write the merged DNG next to {first}: {e}")))?
             .to_string_lossy()
             .to_string();
-        let report = crate::import::import(self, std::slice::from_ref(&path), crate::import::ImportMode::Add)?;
-        let id = report
-            .imported
-            .first()
-            .copied()
-            .map(PhotoId)
-            .ok_or_else(|| EngineError::Other(format!("the merged file {path} could not be imported: {:?}", report.failed)))?;
-        if job.finish.stack {
+        // a trashed earlier merge with the very same bytes comes back rather than being skipped
+        let opts = crate::import::ImportOptions { on_deleted: crate::import::OnDeleted::Restore, ..Default::default() };
+        let report = crate::import::import_with(self, std::slice::from_ref(&path), &opts)?;
+        let mut info = out.info;
+        let id = match (report.imported.first().or(report.restored.first()), report.duplicates.first()) {
+            (Some(id), _) => PhotoId(*id),
+            // the same merge again (same frames and options): the library has these bytes already,
+            // so the copy just written goes and the earlier result stands for it
+            (None, Some(crate::import::Duplicate { existing: Some(e), .. })) if self.catalog.photo(PhotoId(*e)).is_some() => {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    log::warn!("{path}: {e}");
+                }
+                info["sameAs"] = json!(e);
+                PhotoId(*e)
+            }
+            _ => return Err(EngineError::Other(format!("the merged file {path} could not be imported: {:?}", report.failed))),
+        };
+        let path = match self.catalog.photo(id).map(|p| p.source.clone()) {
+            Some(Source::File { path }) => path,
+            _ => path,
+        };
+        if job.stacks_result() {
             let sources: Vec<PhotoId> = job.sources.iter().map(|(p, _)| *p).collect();
-            if let Some(op) = self.catalog.stack_with_ops(id, &sources) {
+            // on top of the stack the sources came from (unless it changed meanwhile), its order kept
+            let op = match job.one_stack.filter(|sid| self.catalog.common_stack(&sources) == Some(*sid)) {
+                Some(sid) if self.catalog.stack_of(id).is_some_and(|st| st.id == sid) => self.catalog.set_top_ops(id),
+                Some(sid) => self.catalog.push_top_ops(id, sid),
+                None => self.catalog.stack_with_ops(id, &sources),
+            };
+            if let Some(op) = op {
                 self.commit("Stack with Sources", op)?;
             }
         }
         self.selection = crate::Selection::single(id);
-        if job.finish.auto_settings {
+        // an earlier result standing for this merge keeps its settings (it may have been edited)
+        let reused = info.get("sameAs").is_some();
+        if job.finish.auto_settings && !reused {
             self.execute("develop.auto", &json!({}))?;
         }
-        if let Some(c) = out.crop
+        if let Some(c) = out.crop.filter(|_| !reused)
             && let Some(d) = self.develop_of(id)
         {
             let mut d = (*d).clone();
             d.crop.geometry.rect = lightcraft_geom::Rect::from_xywh(c[0], c[1], c[2], c[3]);
             self.set_develop(id, d, "Auto Crop")?;
         }
-        let mut info = out.info;
-        if let Some(project) = &out.focus_project {
-            // what the stack was made from, for retouching it later (a stack without it still works)
+        // what the stack was made from, for retouching it later (a stack without it still works); an
+        // earlier result standing for this merge keeps its own (it may hold retouching strokes)
+        if let Some(project) = out.focus_project.as_ref().filter(|_| !reused) {
             match serde_json::to_string_pretty(project) {
                 Ok(text) => match crate::export::write_file_durable(&crate::focus_retouch::project_path(&path), text.as_bytes()) {
                     Ok(()) => info["project"] = json!(crate::focus_retouch::project_path(&path)),
@@ -811,5 +845,59 @@ impl Session {
         let job = self.plan_merge(kind, finish, ids, false)?;
         let out = job.run(&|_, _| true).map_err(EngineError::Other)?;
         self.finish_merge(&job, out)
+    }
+
+    /// Merge each group on its own, one after the other; a group that fails is reported and the
+    /// others still run → `{results: [{group, id, path, …}], failed: [{group, error}], count}`.
+    /// The results end up selected.
+    pub fn merge_groups(&mut self, kind: &MergeKind, finish: &MergeFinish, groups: &[Vec<PhotoId>]) -> Value {
+        let (mut results, mut failed) = (Vec::new(), Vec::new());
+        for g in groups {
+            let ids: Vec<u64> = g.iter().map(|id| id.0).collect();
+            match self.merge_now(kind.clone(), finish.clone(), g) {
+                Ok(mut r) => {
+                    r["group"] = json!(ids);
+                    results.push(r);
+                }
+                Err(e) => failed.push(json!({"group": ids, "error": e.to_string()})),
+            }
+        }
+        // all the results selected (each merge selected its own)
+        let made: Vec<PhotoId> = results.iter().filter_map(|r| r["id"].as_u64()).map(PhotoId).collect();
+        if made.len() > 1 {
+            self.selection = crate::Selection { active: made.first().copied(), ids: made };
+        }
+        json!({"results": results, "failed": failed, "count": groups.len()})
+    }
+
+    /// The photos to look for focus brackets in, and whether they are the selection: `ids`, else
+    /// the selection when two or more photos (grid cells) are selected, else the photos shown —
+    /// collapsed stacks counting as their members (see [`crate::stack_scope`]). One selected cell
+    /// is the usual state of the grid, not a choice of where to look.
+    pub fn bracket_scope(&mut self, p: &Value, members: Members) -> (StackScope, bool) {
+        if p.get("ids").is_some() || p.get("id").is_some() || self.selection.ids.len() >= 2 {
+            return (self.stack_targets(p, members), true);
+        }
+        let vis = self.visible_cloned();
+        (self.expand_stacks(&vis, members), false)
+    }
+
+    /// The focus brackets to stack one by one (`merge.focusStackBatch`, the app's Focus Stack Each
+    /// Bracket): each selected collapsed stack — or with no selection, each focus-bracket stack in
+    /// view — as it is, and the brackets found among the other photos (`rule`).
+    pub fn focus_batch_groups(&mut self, p: &Value, rule: &BracketRule) -> Vec<Vec<PhotoId>> {
+        let (scope, selected) = self.bracket_scope(p, Members::Sources);
+        let mut groups = Vec::new();
+        let mut rest = scope.loose.clone();
+        for (sid, m) in &scope.stacks {
+            let take = selected || self.catalog.stack(*sid).is_some_and(|st| st.kind == StackKind::FocusBracket);
+            if take && m.len() >= 2 {
+                groups.push(m.clone());
+            } else {
+                rest.extend(m.iter().copied());
+            }
+        }
+        groups.extend(self.catalog.focus_bracket_groups(&rest, rule));
+        groups
     }
 }

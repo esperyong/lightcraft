@@ -55,8 +55,8 @@ fn hdr_merge_command_creates_and_imports_a_dng() {
     assert_eq!(st.photos[1..].iter().map(|p| p.0).collect::<Vec<_>>(), ids);
     assert!(st.collapsed);
     assert_eq!(s.visible_cloned(), vec![id]);
-    // the second merge doesn't overwrite the first
-    let r2 = s.execute("merge.hdr", &json!({"ids": ids, "autoSettings": false})).unwrap();
+    // the second merge doesn't overwrite the first (its sources are one stack now: asked not to stack)
+    let r2 = s.execute("merge.hdr", &json!({"ids": ids, "autoSettings": false, "stack": false})).unwrap();
     assert!(r2["path"].as_str().unwrap().ends_with("IMG_0-HDR-2.dng"));
     let id2 = lightcraft_catalog::PhotoId(r2["id"].as_u64().unwrap());
     assert!(s.catalog.stack_of(id2).is_none(), "no stack without the option");
@@ -183,6 +183,86 @@ fn focus_brackets_are_detected_and_stacked_in_a_batch() {
     // a bad group fails alone
     let r = s.execute("merge.focusStackBatch", &json!({"groups": [[ids[0]], [ids[4], ids[5]]], "autoSettings": false})).unwrap();
     assert_eq!((r["results"].as_array().unwrap().len(), r["failed"].as_array().unwrap().len()), (1, 1), "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #24: brackets become collapsed focus-bracket stacks; one selected stack is merged whole and
+/// takes the result on top; several selected stacks are merged one by one.
+#[test]
+fn a_selected_collapsed_bracket_is_merged_whole_with_the_result_on_top() {
+    use lightcraft_catalog::{PhotoId, StackKind};
+    let dir = temp_dir("focus-stacks");
+    let mut paths = Vec::new();
+    for (b, start) in [(0, 0), (1, 30)] {
+        for (i, d) in lightcraft_merge::synth::focus_bracket_dngs(240, 160, 4, start).unwrap().into_iter().enumerate() {
+            let p = dir.join(format!("S{b}_{i}.dng"));
+            std::fs::write(&p, d).unwrap();
+            paths.push(p.to_string_lossy().to_string());
+        }
+    }
+    let mut s = Session::new().with_fs();
+    let ids: Vec<PhotoId> = import(&mut s, paths).into_iter().map(PhotoId).collect();
+    // a stack by capture time holding both brackets, collapsed
+    s.execute("library.selectNone", &json!({})).unwrap();
+    s.execute("stack.auto", &json!({"gap": 100})).unwrap();
+    assert_eq!(s.visible_cloned().len(), 1);
+    // nothing selected: the brackets are found inside it and become stacks of their own
+    let r = s.execute("merge.detectFocusBrackets", &json!({"stack": true})).unwrap();
+    assert_eq!((r["count"].as_u64(), r["stacked"].as_u64(), r["photos"].as_u64()), (Some(2), Some(2), Some(8)), "{r}");
+    let (b0, b1) = (s.catalog.stack_of(ids[0]).unwrap().clone(), s.catalog.stack_of(ids[4]).unwrap().clone());
+    assert_eq!((b0.photos.clone(), b0.kind, b0.collapsed), (ids[0..4].to_vec(), StackKind::FocusBracket, true));
+    assert_eq!(b1.photos, ids[4..8].to_vec());
+    let shown = |s: &mut Session| {
+        let mut v = s.visible_cloned();
+        v.sort();
+        v
+    };
+    assert_eq!(shown(&mut s), vec![ids[0], ids[4]]);
+    // again: nothing new; one undo brings the time stack back
+    let r = s.execute("merge.detectFocusBrackets", &json!({"stack": true})).unwrap();
+    assert_eq!((r["stacked"].as_u64(), r["unchanged"].as_u64()), (Some(0), Some(2)), "{r}");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.catalog.stack_of(ids[0]).map(|st| st.photos.len()), Some(8));
+    s.execute("edit.redo", &json!({})).unwrap();
+    assert_eq!(s.catalog.stack_of(ids[0]).map(|st| st.photos.len()), Some(4));
+    // one collapsed bracket selected (one cell): all its frames are merged, the result goes on top
+    s.execute("library.select", &json!({"ids": [ids[0].0]})).unwrap();
+    let r = s.execute("merge.focusStack", &json!({"method": "a", "autoSettings": false})).unwrap();
+    assert_eq!(r["used"], 4, "{r}");
+    let res = PhotoId(r["id"].as_u64().unwrap());
+    let st = s.catalog.stack_of(res).unwrap().clone();
+    assert_eq!((st.id, st.kind, st.collapsed), (b0.id, StackKind::FocusBracket, true));
+    assert_eq!(st.photos, [vec![res], ids[0..4].to_vec()].concat(), "on top, the frames in order");
+    assert_eq!(shown(&mut s), vec![ids[4], res]);
+    // the result's cell again: merged from the frames (not from the result), the new one on top
+    let r = s.execute("merge.focusStack", &json!({"method": "c", "autoSettings": false})).unwrap();
+    assert_eq!(r["used"], 4, "{r}");
+    let res2 = PhotoId(r["id"].as_u64().unwrap());
+    assert_eq!(s.catalog.stack_of(res2).map(|st| st.photos[..2].to_vec()), Some(vec![res2, res]));
+    // two collapsed brackets selected: one merge each, each result on its own stack
+    s.execute("library.select", &json!({"ids": [res2.0, ids[4].0]})).unwrap();
+    let r = s.execute("merge.focusStack", &json!({"method": "a", "autoSettings": false})).unwrap();
+    assert_eq!((r["count"].as_u64(), r["perStack"].as_bool()), (Some(2), Some(true)), "{r}");
+    assert_eq!(r["failed"].as_array().map(Vec::len), Some(0), "{r}");
+    let made: Vec<PhotoId> = r["results"].as_array().unwrap().iter().map(|v| PhotoId(v["id"].as_u64().unwrap())).collect();
+    assert_eq!(
+        made.iter().map(|id| s.catalog.stack_of(*id).map(|st| (st.id, st.top()))).collect::<Vec<_>>(),
+        [Some((b0.id, made[0])), Some((b1.id, made[1]))]
+    );
+    // a preview of both shows the first
+    let pv = s.execute("merge.focusStack", &json!({"preview": true})).unwrap();
+    assert_eq!(pv["stacks"], 2, "{pv}");
+    // nothing selected: Focus Stack Each Bracket finds the collapsed brackets
+    s.execute("library.selectNone", &json!({})).unwrap();
+    let (photos, files) = (s.catalog.photos().count(), std::fs::read_dir(&dir).unwrap().count());
+    let r = s.execute("merge.focusStackBatch", &json!({"method": "a", "autoSettings": false})).unwrap();
+    assert_eq!((r["count"].as_u64(), r["failed"].as_array().map(Vec::len)), (Some(2), Some(0)), "{r}");
+    assert!(r["results"].as_array().unwrap().iter().all(|v| v["used"] == 4), "{r}");
+    // the same merges as before (same frames, same method): the earlier results stand for them
+    assert!(r["results"].as_array().unwrap().iter().all(|v| v["sameAs"].is_u64()), "{r}");
+    assert_eq!((s.catalog.photos().count(), std::fs::read_dir(&dir).unwrap().count()), (photos, files), "no copies left behind");
+    let info = s.execute("photo.inspect", &json!({"id": ids[4].0})).unwrap();
+    assert_eq!(info["stack"]["kind"], "focusBracket");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -5,11 +5,13 @@
 //! [`Session::plan_merge`] and runs it on a worker thread. `preview: true` merges ≤ 1024 px frames
 //! and (with `previewPath`) writes the rendered preview as PNG instead of adding a photo.
 
-use lightcraft_catalog::PhotoId;
 use lightcraft_catalog::stacks::BracketRule;
+use lightcraft_catalog::{PhotoId, StackKind};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, bool_or, cmd, str_param};
+use crate::merge::MergeKind;
+use crate::stack_scope::Members;
 use crate::{Result, Session};
 
 fn can_merge(s: &Session) -> std::result::Result<(), String> {
@@ -20,15 +22,32 @@ fn can_merge(s: &Session) -> std::result::Result<(), String> {
     if s.catalog.photos().nth(1).is_none() { Err("the library has fewer than 2 photos".into()) } else { Ok(()) }
 }
 
+/// Bracket detection reads no files (only the catalog), so it also works where merges can't.
+fn has_photos(s: &Session) -> std::result::Result<(), String> {
+    if s.catalog.photos().nth(1).is_none() { Err("the library has fewer than 2 photos".into()) } else { Ok(()) }
+}
+
 fn run(s: &mut Session, id: &str, p: &Value) -> Result<Value> {
     let (kind, finish) = crate::merge::parse(id, p)?;
-    let ids: Vec<PhotoId> = s.targets(p);
+    let scope = s.stack_targets(p, Members::Sources);
+    // two or more collapsed stacks (focus or exposure brackets): one merge each; panoramas join them
+    let per_stack = scope.per_stack() && matches!(kind, MergeKind::FocusStack { .. } | MergeKind::Hdr { .. });
     if !bool_or(p, "preview", false) {
-        return s.merge_now(kind, finish, &ids);
+        if per_stack {
+            let mut r = s.merge_groups(&kind, &finish, &scope.groups());
+            r["perStack"] = json!(true);
+            return Ok(r);
+        }
+        return s.merge_now(kind, finish, &scope.ids);
     }
+    // a preview of several stacks shows the first
+    let ids = if per_stack { scope.groups().into_iter().next().unwrap_or_default() } else { scope.ids.clone() };
     let job = s.plan_merge(kind, finish, &ids, true)?;
     let out = job.run(&|_, _| true).map_err(|e| bad(id, e))?;
     let mut info = out.info;
+    if per_stack {
+        info["stacks"] = json!(scope.stacks.len());
+    }
     if let (Some(path), Some(img)) = (str_param(p, "previewPath"), &out.preview) {
         let png = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(img), &lightcraft_codecs::EncodeMeta::default())
             .map_err(|e| bad(id, e.to_string()))?;
@@ -43,7 +62,7 @@ fn run(s: &mut Session, id: &str, p: &Value) -> Result<Value> {
 }
 
 /// The bracket rule from `{gapSecs=2, minFrames=3, sameExposure=true}`.
-fn bracket_rule(p: &Value) -> BracketRule {
+pub fn bracket_rule(p: &Value) -> BracketRule {
     let d = BracketRule::default();
     BracketRule {
         gap_secs: p.get("gapSecs").and_then(Value::as_f64).filter(|g| g.is_finite() && *g >= 0.0).unwrap_or(d.gap_secs),
@@ -53,43 +72,43 @@ fn bracket_rule(p: &Value) -> BracketRule {
     }
 }
 
-/// The photos to look for brackets in: `ids`, else the selection (two or more), else the photos
-/// shown.
-fn bracket_scope(s: &mut Session, p: &Value) -> Vec<PhotoId> {
-    if p.get("ids").is_some() || s.selection.ids.len() >= 2 {
-        return s.targets(p);
-    }
-    s.visible_cloned()
-}
-
-/// Focus brackets among the photos (see [`BracketRule`]); `stack: true` stacks each.
+/// Focus brackets among the photos (see [`BracketRule`]) — the selection or the photos shown,
+/// members of collapsed stacks included; `stack: true` makes each a focus-bracket stack of its own
+/// (one undo step).
 fn detect(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = bracket_scope(s, p);
-    let groups = s.catalog.focus_bracket_groups(&ids, &bracket_rule(p));
-    let mut stacked = 0;
+    let (scope, _) = s.bracket_scope(p, Members::All);
+    let groups = s.catalog.focus_bracket_groups(&scope.ids, &bracket_rule(p));
+    let (mut stacked, mut unchanged) = (0, 0);
     if bool_or(p, "stack", false) {
         for g in &groups {
-            let Some((first, rest)) = g.split_first() else { continue };
-            if let Some(op) = s.catalog.group_ops(*first, rest, true) {
-                s.commit("Stack Focus Bracket", op)?;
-                stacked += 1;
+            match s.catalog.restack_ops(g, StackKind::FocusBracket) {
+                Some(op) => {
+                    s.commit("Stack Focus Bracket", op)?;
+                    stacked += 1;
+                }
+                None => unchanged += 1,
             }
         }
+        s.merge_undo(stacked, "Stack Focus Brackets");
+        if stacked > 0 {
+            s.keep_active_visible();
+        }
     }
-    Ok(
-        json!({"groups": groups.iter().map(|g| g.iter().map(|id| id.0).collect::<Vec<_>>()).collect::<Vec<_>>(), "count": groups.len(), "stacked": stacked}),
-    )
+    Ok(json!({
+        "groups": groups.iter().map(|g| g.iter().map(|id| id.0).collect::<Vec<_>>()).collect::<Vec<_>>(),
+        "count": groups.len(),
+        "photos": groups.iter().map(Vec::len).sum::<usize>(),
+        "stacked": stacked,
+        "unchanged": unchanged,
+    }))
 }
 
-/// Focus-stack each bracket (`groups`, else the brackets detected) with the same options, one after
-/// the other; a bracket that fails is reported and the others still run.
+/// Focus-stack each bracket (`groups`, else [`Session::focus_batch_groups`]) with the same options,
+/// one after the other; a bracket that fails is reported and the others still run.
 fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let groups: Vec<Vec<PhotoId>> = match p.get("groups").and_then(Value::as_array) {
         Some(a) => a.iter().map(|g| g.as_array().map(|v| v.iter().filter_map(Value::as_u64).map(PhotoId).collect()).unwrap_or_default()).collect(),
-        None => {
-            let ids = bracket_scope(s, p);
-            s.catalog.focus_bracket_groups(&ids, &bracket_rule(p))
-        }
+        None => s.focus_batch_groups(p, &bracket_rule(p)),
     };
     // one depth PNG path would be overwritten by every bracket
     let mut params = p.clone();
@@ -98,18 +117,7 @@ fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         o.remove("preview");
     }
     let (kind, finish) = crate::merge::parse("merge.focusStack", &params)?;
-    let (mut results, mut failed) = (Vec::new(), Vec::new());
-    for g in &groups {
-        let ids: Vec<u64> = g.iter().map(|id| id.0).collect();
-        match s.merge_now(kind.clone(), finish.clone(), g) {
-            Ok(mut r) => {
-                r["group"] = json!(ids);
-                results.push(r);
-            }
-            Err(e) => failed.push(json!({"group": ids, "error": e.to_string()})),
-        }
-    }
-    Ok(json!({"results": results, "failed": failed, "count": groups.len()}))
+    Ok(s.merge_groups(&kind, &finish, &groups))
 }
 
 /// The strokes parameter of `merge.focusRetouch`.
@@ -166,7 +174,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "HDR Merge",
             [],
             None,
-            "{ids?, align=true, deghost=none|low|medium|high, autoSettings=true, stack=false, preview=false, showOverlay=false, previewPath?}",
+            "{ids? (default: the selection, a collapsed stack standing for its photos; two or more collapsed stacks are merged one by one → {results, failed, count, perStack}), expandStacks=false (explicit ids: take a collapsed stack's photos too), align=true, deghost=none|low|medium|high, autoSettings=true, stack (default: when the photos are one stack, the result goes on its top), preview=false, showOverlay=false, previewPath?}",
             can_merge,
             |s, p| run(s, "merge.hdr", p)
         ),
@@ -175,7 +183,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Panorama Merge",
             [],
             None,
-            "{ids?, projection=auto|spherical|cylindrical|perspective, boundaryWarp=0..100, autoCrop=false, fillEdges=false, autoSettings=true, stack=false, maxMegapixels=40, preview=false, previewPath?}",
+            "{ids? (default: the selection, a collapsed stack standing for its photos), expandStacks=false, projection=auto|spherical|cylindrical|perspective, boundaryWarp=0..100, autoCrop=false, fillEdges=false, autoSettings=true, stack (default: when the photos are one stack), maxMegapixels=40, preview=false, previewPath?}",
             can_merge,
             |s, p| run(s, "merge.panorama", p)
         ),
@@ -184,7 +192,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "HDR Panorama Merge",
             [],
             None,
-            "{ids?, bracket=0 (auto from EXIF), align, deghost, projection, boundaryWarp, autoCrop, fillEdges, autoSettings, stack, preview, previewPath?}",
+            "{ids? (default: the selection, collapsed stacks standing for their photos), expandStacks=false, bracket=0 (auto from EXIF), align, deghost, projection, boundaryWarp, autoCrop, fillEdges, autoSettings, stack (default: when the photos are one stack), preview, previewPath?}",
             can_merge,
             |s, p| run(s, "merge.hdrPanorama", p)
         ),
@@ -193,7 +201,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Focus Stack",
             [],
             None,
-            "{ids?, method=depth|average|pyramid (a|b|c; depth), radius=1..30 (8), smoothing=0..10 (4), align=true, alignShift, alignRotation, alignScale, alignBrightness (default: align), order=capture|selection|reverse|auto, every=1 (every n-th photo, first and last always; previews ~12 photos), reference=middle|first|sharpest, crop=common|reference, maxMegapixels=0 (no limit), depthMap=true (embed the depth map in the DNG for Depth Range masks), depthPath? (also as a 16-bit PNG), autoSettings=true, stack=false, preview=false, showDepth=false, previewPath?}",
+            "{ids? (default: the selection, a collapsed stack standing for its photos — merge results, virtual copies and videos left out; two or more collapsed stacks are stacked one by one → {results, failed, count, perStack}), expandStacks=false (explicit ids: take a collapsed stack's photos too), method=depth|average|pyramid (a|b|c; depth), radius=1..30 (8), smoothing=0..10 (4), align=true, alignShift, alignRotation, alignScale, alignBrightness (default: align), order=capture|selection|reverse|auto, every=1 (every n-th photo, first and last always; previews ~12 photos), reference=middle|first|sharpest, crop=common|reference, maxMegapixels=0 (no limit), depthMap=true (embed the depth map in the DNG for Depth Range masks), depthPath? (also as a 16-bit PNG), autoSettings=true, stack (default: when the photos are one stack, e.g. a focus bracket, the result goes on its top), preview=false, showDepth=false, previewPath?}",
             can_merge,
             |s, p| run(s, "merge.focusStack", p)
         ),
@@ -220,8 +228,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "Detect Focus Brackets",
             [],
             None,
-            "{ids? (default: the selection, else the photos shown), gapSecs=2 (most seconds between frames), minFrames=3, sameExposure=true, stack=false (stack each bracket)} → {groups: [[ids]], count, stacked}. Frames of a bracket share camera, lens, focal length and (by default) exposure; merge results are left out",
-            can_merge,
+            "{ids? (default: the selection of two or more photos, else the photos shown; members of collapsed stacks included), gapSecs=2 (most seconds between frames), minFrames=3, sameExposure=true, stack=false (make each bracket a collapsed focus-bracket stack of its own, taking its photos out of other stacks; one undo step)} → {groups: [[ids]], count, photos, stacked (stacks made), unchanged (already stacked)}. Frames of a bracket share camera, lens, focal length and (by default) exposure; merge results and virtual copies are left out",
+            has_photos,
             detect
         ),
         cmd!(
@@ -229,7 +237,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Focus Stack Each Bracket",
             [],
             None,
-            "{groups? [[ids]] (default: the brackets merge.detectFocusBrackets finds, same scope and gapSecs/minFrames/sameExposure), …merge.focusStack options} → {results: [{group, id, path, …}], failed: [{group, error}], count}. Runs the brackets one after the other",
+            "{groups? [[ids]] (default: each selected collapsed stack — with no selection, each focus-bracket stack shown — and the brackets merge.detectFocusBrackets finds among the other photos, with gapSecs/minFrames/sameExposure), …merge.focusStack options} → {results: [{group, id, path, …}], failed: [{group, error}], count}. Runs the brackets one after the other",
             can_merge,
             batch
         ),

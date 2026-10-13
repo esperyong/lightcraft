@@ -1802,5 +1802,16 @@
   "Stack focus brackets": "堆疊對焦包圍",
   "Each focus bracket becomes a collapsed stack: adjust it and focus-stack it as one": "每組對焦包圍成為一個摺疊的堆疊：可以整組調整、整組景深合成",
   "Stack focus brackets on import": "匯入時堆疊對焦包圍",
-  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "用同一相機、鏡頭和曝光、相隔不超過 2 秒拍下的照片會成為一個摺疊的堆疊，可以整組調整、整組景深合成。"
+  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "用同一相機、鏡頭和曝光、相隔不超過 2 秒拍下的照片會成為一個摺疊的堆疊，可以整組調整、整組景深合成。",
+  "Use Source Settings": "使用來源相片的調整",
+  "The result takes the photos' white balance, tone, colour, detail and lens corrections (not crop, masks or geometry)": "結果沿用來源相片的白平衡、影調、顏色、細節和鏡頭校正（不含裁切、遮色片和幾何調整）",
+  "Auto-Stack Focus Brackets": "按對焦包圍自動堆疊",
+  "Auto-Stack Focus Brackets…": "按對焦包圍自動堆疊…",
+  "Frames of a bracket are at most this far apart:": "同一組包圍中相鄰兩張最多相隔：",
+  "Same exposure (leaves exposure brackets for HDR out)": "曝光相同（不含用於 HDR 的曝光包圍）",
+  "Each becomes a collapsed stack: select it to adjust or focus-stack the whole bracket.": "每組成為一個摺疊的堆疊：選取它即可調整整組或對整組做景深合成。",
+  "Focus bracket — click to expand (S)": "對焦包圍 — 點按展開 (S)",
+  "Focus bracket — click to collapse (S)": "對焦包圍 — 點按摺疊 (S)",
+  "Stack — click to expand (S)": "堆疊 — 點按展開 (S)",
+  "Stack — click to collapse (S)": "堆疊 — 點按摺疊 (S)"
 }

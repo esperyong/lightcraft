@@ -1797,5 +1797,16 @@
   "Stack focus brackets": "フォーカスブラケットをスタック",
   "Each focus bracket becomes a collapsed stack: adjust it and focus-stack it as one": "フォーカスブラケットごとに折りたたんだスタックにします。まとめて調整し、まとめて深度合成できます",
   "Stack focus brackets on import": "読み込み時にフォーカスブラケットをスタック",
-  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "同じカメラ・レンズ・露出で 2 秒以内に続けて撮った写真を、折りたたんだ 1 つのスタックにします。まとめて調整し、まとめて深度合成できます。"
+  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "同じカメラ・レンズ・露出で 2 秒以内に続けて撮った写真を、折りたたんだ 1 つのスタックにします。まとめて調整し、まとめて深度合成できます。",
+  "Use Source Settings": "元の写真の設定を使用",
+  "The result takes the photos' white balance, tone, colour, detail and lens corrections (not crop, masks or geometry)": "結果は写真のホワイトバランス、階調、カラー、ディテール、レンズ補正を引き継ぎます（切り抜き、マスク、ジオメトリは除く）",
+  "Auto-Stack Focus Brackets": "フォーカスブラケットで自動スタック",
+  "Auto-Stack Focus Brackets…": "フォーカスブラケットで自動スタック…",
+  "Frames of a bracket are at most this far apart:": "1 つのブラケット内のコマの最大間隔:",
+  "Same exposure (leaves exposure brackets for HDR out)": "同じ露出（HDR 用の露出ブラケットは除く）",
+  "Each becomes a collapsed stack: select it to adjust or focus-stack the whole bracket.": "それぞれ折りたたんだスタックになります。選択すると、ブラケット全体を調整・深度合成できます。",
+  "Focus bracket — click to expand (S)": "フォーカスブラケット — クリックで展開 (S)",
+  "Focus bracket — click to collapse (S)": "フォーカスブラケット — クリックで折りたたむ (S)",
+  "Stack — click to expand (S)": "スタック — クリックで展開 (S)",
+  "Stack — click to collapse (S)": "スタック — クリックで折りたたむ (S)"
 }

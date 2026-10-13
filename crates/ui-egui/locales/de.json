@@ -1940,5 +1940,16 @@
   "Stack focus brackets": "Fokusreihen stapeln",
   "Each focus bracket becomes a collapsed stack: adjust it and focus-stack it as one": "Jede Fokusreihe wird ein zugeklappter Stapel: als Ganzes bearbeiten und Fokus-stapeln",
   "Stack focus brackets on import": "Fokusreihen beim Import stapeln",
-  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "Fotos, die innerhalb von 2 s mit derselben Kamera, demselben Objektiv und derselben Belichtung aufgenommen wurden, werden ein zugeklappter Stapel – bereit, als Ganzes bearbeitet und Fokus-gestapelt zu werden."
+  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "Fotos, die innerhalb von 2 s mit derselben Kamera, demselben Objektiv und derselben Belichtung aufgenommen wurden, werden ein zugeklappter Stapel – bereit, als Ganzes bearbeitet und Fokus-gestapelt zu werden.",
+  "Use Source Settings": "Einstellungen der Quellfotos verwenden",
+  "The result takes the photos' white balance, tone, colour, detail and lens corrections (not crop, masks or geometry)": "Das Ergebnis übernimmt Weißabgleich, Tonwerte, Farbe, Details und Objektivkorrekturen der Fotos (nicht Freistellung, Masken oder Geometrie)",
+  "Auto-Stack Focus Brackets": "Fokusreihen automatisch stapeln",
+  "Auto-Stack Focus Brackets…": "Fokusreihen automatisch stapeln…",
+  "Frames of a bracket are at most this far apart:": "Aufnahmen einer Reihe liegen höchstens so weit auseinander:",
+  "Same exposure (leaves exposure brackets for HDR out)": "Gleiche Belichtung (Belichtungsreihen für HDR bleiben außen vor)",
+  "Each becomes a collapsed stack: select it to adjust or focus-stack the whole bracket.": "Jede wird ein zugeklappter Stapel: auswählen, um die ganze Reihe zu bearbeiten oder Fokus-zu-stapeln.",
+  "Focus bracket — click to expand (S)": "Fokusreihe – zum Aufklappen klicken (S)",
+  "Focus bracket — click to collapse (S)": "Fokusreihe – zum Zuklappen klicken (S)",
+  "Stack — click to expand (S)": "Stapel – zum Aufklappen klicken (S)",
+  "Stack — click to collapse (S)": "Stapel – zum Zuklappen klicken (S)"
 }

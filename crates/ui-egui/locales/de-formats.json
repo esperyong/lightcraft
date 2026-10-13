@@ -210,5 +210,9 @@
   "Analyzed {} photos": "{} Fotos analysiert",
   "Analyzed {} photos ({} could not be analyzed)": "{} Fotos analysiert ({} konnten nicht analysiert werden)",
   "Analyzing photos: {done} of {total}": "Fotos werden analysiert: {done} von {total}",
-  " · {} focus bracket{} stacked": " · {0} Fokusreihe(n) gestapelt{1:.0}"
+  " · {} focus bracket{} stacked": " · {0} Fokusreihe(n) gestapelt{1:.0}",
+  "{g} stacks, merged one by one": "{g} Stapel, einzeln zusammengefügt",
+  "{n} photos (from a stack)": "{n} Fotos (aus einem Stapel)",
+  "Finds {} focus bracket{} ({} photos) among {scope}": "Findet {0} Fokusreihe(n) ({2} Fotos) unter {scope}{1:.0}",
+  "Stacked {} focus bracket{} ({} already were)": "{0} Fokusreihe(n) gestapelt ({2} waren es schon){1:.0}"
 }

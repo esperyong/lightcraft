@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use lightcraft_catalog::PhotoId;
 use lightcraft_engine::merge::{MergeJob, MergeOutput};
+use lightcraft_engine::stack_scope::Members;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -31,8 +32,14 @@ pub struct MergeDialog {
     /// none | low | medium | high
     pub deghost: String,
     pub show_overlay: bool,
-    pub auto_settings: bool,
-    pub stack: bool,
+    /// `None`: the engine decides (on, unless the result takes edited sources' settings).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_settings: Option<bool>,
+    /// The result starts from the edited sources' settings ([`lightcraft_engine::merge_look`]).
+    pub source_settings: bool,
+    /// `None`: the engine decides (when the photos are one stack, the result goes on its top).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stack: Option<bool>,
     /// auto | spherical | cylindrical | perspective
     pub projection: String,
     pub boundary_warp: f64,
@@ -67,8 +74,9 @@ impl Default for MergeDialog {
             align: true,
             deghost: "none".into(),
             show_overlay: false,
-            auto_settings: true,
-            stack: false,
+            auto_settings: None,
+            source_settings: true,
+            stack: None,
             projection: "auto".into(),
             boundary_warp: 0.0,
             auto_crop: true,
@@ -176,8 +184,20 @@ pub struct MergeState {
     pub failed_options: Option<MergeDialog>,
     /// The last finished merge (`{id, path, …}`).
     pub last_result: Option<Value>,
-    /// Photos the dialog merges (the selection when it opened).
+    /// Photos the dialog merges (the selection when it opened, a collapsed stack standing for its
+    /// photos; the first of `groups` when there are several).
     pub ids: Vec<PhotoId>,
+    /// Two or more collapsed stacks selected (focus stack, HDR): merged one by one.
+    pub groups: Vec<Vec<PhotoId>>,
+    /// The photos came from a collapsed stack (the dialog says so).
+    pub from_stack: bool,
+    /// Some of them were edited: the result takes their settings (and skips Auto Settings) unless
+    /// asked otherwise.
+    pub edited: bool,
+    /// They are all in one stack: the result goes on its top unless asked otherwise.
+    pub one_stack: bool,
+    /// Results of the running batch (selected together when it ends).
+    pub queue_results: Vec<PhotoId>,
     /// The options of the last merge started, per kind ("merge.hdr" …): Merge with Last Settings.
     pub last: std::collections::HashMap<String, MergeDialog>,
     /// Finished previews, most recent last.
@@ -225,13 +245,65 @@ fn spawn(app: &LightcraftApp, options: &MergeDialog, ids: &[PhotoId], preview: b
     Ok(MergeTask { preview, job, options: options.clone(), progress, cancel, rx })
 }
 
-/// Open the merge dialog for the selection.
-pub fn open(app: &mut LightcraftApp, command: &str) -> Result<Value, String> {
-    let ids = app.session.targets(&json!({}));
-    if ids.len() < 2 {
+/// What merging the selection works on: a collapsed stack stands for its photos (merge results,
+/// virtual copies and videos left out), and two or more collapsed stacks are focus-stacked or
+/// HDR-merged one by one (`groups`; `ids` is the first).
+pub struct MergeScope {
+    pub ids: Vec<PhotoId>,
+    pub groups: Vec<Vec<PhotoId>>,
+    pub from_stack: bool,
+}
+
+pub fn scope(app: &LightcraftApp, command: &str) -> MergeScope {
+    let sc = app.session.stack_targets(&json!({}), Members::Sources);
+    let per_stack = sc.per_stack() && matches!(command, "merge.focusStack" | "merge.hdr");
+    let groups = if per_stack { sc.groups() } else { Vec::new() };
+    let from_stack = !sc.stacks.is_empty();
+    let ids = groups.first().cloned().unwrap_or(sc.ids);
+    MergeScope { ids, groups, from_stack }
+}
+
+/// The selection holds two or more photos to merge (a collapsed stack: its photos).
+pub fn can_merge(app: &LightcraftApp) -> bool {
+    app.session.targets(&json!({})).len() >= 2 || app.session.stack_targets(&json!({}), Members::Sources).ids.len() >= 2
+}
+
+/// Take the scope of `command` for the next merge (the dialog's or one with the last settings).
+fn take_scope(app: &mut LightcraftApp, command: &str) -> Result<(), String> {
+    let sc = scope(app, command);
+    if sc.ids.len() < 2 {
         return Err("select at least 2 photos to merge".into());
     }
-    app.merge.ids = ids;
+    app.merge.edited = app.session.any_edited(&sc.ids);
+    app.merge.one_stack = app.session.catalog.common_stack(&sc.ids).is_some();
+    app.merge.ids = sc.ids;
+    app.merge.groups = sc.groups;
+    app.merge.from_stack = sc.from_stack;
+    Ok(())
+}
+
+/// The options last used for `command` (the defaults the first time), with Auto Settings and
+/// Create Stack left to what the photos call for.
+fn last_options(app: &LightcraftApp, command: &str) -> MergeDialog {
+    let mut opts = app.merge.last.get(command).cloned().unwrap_or_else(|| MergeDialog::for_command(command));
+    opts.auto_settings = None;
+    opts.stack = None;
+    opts
+}
+
+/// Whether Auto Settings runs with `opts` (as the engine decides when it isn't set).
+pub fn auto_settings(app: &LightcraftApp, opts: &MergeDialog) -> bool {
+    opts.auto_settings.unwrap_or(!(opts.source_settings && app.merge.edited))
+}
+
+/// Whether the result is stacked with its sources with `opts`.
+pub fn creates_stack(app: &LightcraftApp, opts: &MergeDialog) -> bool {
+    opts.stack.unwrap_or(app.merge.one_stack)
+}
+
+/// Open the merge dialog for the selection.
+pub fn open(app: &mut LightcraftApp, command: &str) -> Result<Value, String> {
+    take_scope(app, command)?;
     app.merge.error = None;
     app.merge.preview = None;
     app.merge.preview_pixels = None;
@@ -242,9 +314,9 @@ pub fn open(app: &mut LightcraftApp, command: &str) -> Result<Value, String> {
         t.cancel.store(true, Ordering::Relaxed);
     }
     // the dialog opens with the options of the last merge of its kind
-    let opts = app.merge.last.get(command).cloned().unwrap_or_else(|| MergeDialog::for_command(command));
+    let opts = last_options(app, command);
     app.ui.dialog = Some(crate::state::Dialog::Merge { opts });
-    Ok(json!({"photos": app.merge.ids.len()}))
+    Ok(json!({"photos": app.merge.ids.len(), "stacks": app.merge.groups.len(), "fromStack": app.merge.from_stack}))
 }
 
 /// Start the full-resolution merge (the dialog's Merge button / `ui.dialog.confirm`).
@@ -255,11 +327,27 @@ pub fn start_final(app: &mut LightcraftApp, opts: &MergeDialog) -> Result<Value,
     if let Some(t) = app.merge.preview_task.take() {
         t.cancel.store(true, Ordering::Relaxed);
     }
+    app.merge.last.insert(opts.command.clone(), opts.clone());
+    if app.merge.groups.len() > 1 {
+        // several collapsed stacks: one merge each, one after the other
+        let groups = std::mem::take(&mut app.merge.groups);
+        let n = groups.len();
+        start_batch(app, groups, opts.clone())?;
+        return Ok(json!({"started": true, "stacks": n}));
+    }
     let ids = app.merge.ids.clone();
     let task = spawn(app, opts, &ids, false)?;
     app.merge.final_task = Some(task);
-    app.merge.last.insert(opts.command.clone(), opts.clone());
     Ok(json!({"started": true, "photos": ids.len()}))
+}
+
+/// Merge `groups` one after the other in the background with `opts`.
+fn start_batch(app: &mut LightcraftApp, groups: Vec<Vec<PhotoId>>, opts: MergeDialog) -> Result<(), String> {
+    app.merge.queue_total = groups.len();
+    app.merge.queue = groups.into();
+    app.merge.queue_opts = Some(opts);
+    app.merge.queue_results.clear();
+    start_queued(app)
 }
 
 /// Focus-stack every focus bracket in the selection (or the photos shown), one after the other
@@ -268,19 +356,13 @@ pub fn start_brackets(app: &mut LightcraftApp) -> Result<Value, String> {
     if app.merge.final_task.is_some() {
         return Err("a merge is already running".into());
     }
-    let r = app.session.execute("merge.detectFocusBrackets", &json!({})).map_err(|e| e.to_string())?;
-    let groups: Vec<Vec<PhotoId>> = r["groups"]
-        .as_array()
-        .map(|a| a.iter().map(|g| g.as_array().map(|v| v.iter().filter_map(Value::as_u64).map(PhotoId).collect()).unwrap_or_default()).collect())
-        .unwrap_or_default();
+    // the selected collapsed stacks (or the focus-bracket stacks shown), and brackets among the rest
+    let groups = app.session.focus_batch_groups(&json!({}), &lightcraft_catalog::stacks::BracketRule::default());
     if groups.is_empty() {
         return Err("no focus brackets found (photos shot within 2 s of each other with the same camera settings)".into());
     }
-    let opts = app.merge.last.get("merge.focusStack").cloned().unwrap_or_else(|| MergeDialog::for_command("merge.focusStack"));
-    app.merge.queue_total = groups.len();
-    app.merge.queue = groups.into();
-    app.merge.queue_opts = Some(opts);
-    start_queued(app)?;
+    let opts = last_options(app, "merge.focusStack");
+    start_batch(app, groups, opts)?;
     Ok(json!({"brackets": app.merge.queue_total}))
 }
 
@@ -290,6 +372,8 @@ fn start_queued(app: &mut LightcraftApp) -> Result<(), String> {
         app.merge.queue_opts = None;
         return Ok(());
     };
+    app.merge.edited = app.session.any_edited(&ids);
+    app.merge.one_stack = app.session.catalog.common_stack(&ids).is_some();
     let task = spawn(app, &opts, &ids, false)?;
     app.merge.ids = ids;
     app.merge.final_task = Some(task);
@@ -299,12 +383,8 @@ fn start_queued(app: &mut LightcraftApp) -> Result<(), String> {
 /// Merge the selection without the dialog, with the options last used for `command` (the
 /// defaults the first time).
 pub fn start_last(app: &mut LightcraftApp, command: &str) -> Result<Value, String> {
-    let ids = app.session.targets(&json!({}));
-    if ids.len() < 2 {
-        return Err("select at least 2 photos to merge".into());
-    }
-    app.merge.ids = ids;
-    let opts = app.merge.last.get(command).cloned().unwrap_or_else(|| MergeDialog::for_command(command));
+    take_scope(app, command)?;
+    let opts = last_options(app, command);
     start_final(app, &opts)
 }
 
@@ -436,6 +516,11 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
                 };
                 match r.map_err(lightcraft_engine::EngineError::Other).and_then(|out| app.session.finish_merge(&t.job, out)) {
                     Ok(v) => {
+                        if app.merge.queue_opts.is_some()
+                            && let Some(id) = v["id"].as_u64()
+                        {
+                            app.merge.queue_results.push(PhotoId(id));
+                        }
                         app.merge.last_result = Some(v);
                         app.toast(ctx, crate::i18n::tr_format!("{what} merge added", what = what));
                     }
@@ -449,6 +534,13 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
                     app.merge.queue.clear();
                     app.merge.queue_opts = None;
                     app.ui.status = e;
+                }
+                // a batch done: its results selected together
+                if app.merge.queue_opts.is_none() && !app.merge.queue_results.is_empty() {
+                    let made = std::mem::take(&mut app.merge.queue_results);
+                    if made.len() > 1 {
+                        app.session.selection = lightcraft_engine::Selection { active: made.first().copied(), ids: made };
+                    }
                 }
             }
             Err(_) => {
@@ -586,10 +678,35 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, opts: &mut MergeDialog) 
                 }
                 ui.add_space(4.0);
             }
-            ui.checkbox(&mut opts.auto_settings, crate::i18n::tr("Auto Settings"));
-            ui.checkbox(&mut opts.stack, crate::i18n::tr("Create Stack"));
+            if app.merge.edited {
+                // the photos were adjusted: the result starts from their settings
+                let r = ui.checkbox(&mut opts.source_settings, crate::i18n::tr("Use Source Settings"));
+                crate::widgets::register(ui.ctx(), "check:mergeSourceSettings", r.rect);
+                r.on_hover_text(crate::i18n::tr(
+                    "The result takes the photos' white balance, tone, colour, detail and lens corrections (not crop, masks or geometry)",
+                ));
+            }
+            // shown as they will be; clicked, they are the user's
+            let mut auto = auto_settings(app, opts);
+            let r = ui.checkbox(&mut auto, crate::i18n::tr("Auto Settings"));
+            crate::widgets::register(ui.ctx(), "check:mergeAutoSettings", r.rect);
+            if r.changed() {
+                opts.auto_settings = Some(auto);
+            }
+            let mut stack = creates_stack(app, opts);
+            let r = ui.checkbox(&mut stack, crate::i18n::tr("Create Stack"));
+            crate::widgets::register(ui.ctx(), "check:mergeStack", r.rect);
+            if r.changed() {
+                opts.stack = Some(stack);
+            }
             ui.add_space(8.0);
-            ui.label(egui::RichText::new(crate::i18n::tr_format!("{} photos", app.merge.ids.len())).color(t.text_dim));
+            let n = app.merge.ids.len();
+            let count = match app.merge.groups.len() {
+                g if g > 1 => crate::i18n::tr_format!("{g} stacks, merged one by one", g = g),
+                _ if app.merge.from_stack => crate::i18n::tr_format!("{n} photos (from a stack)", n = n),
+                _ => crate::i18n::tr_format!("{} photos", n),
+            };
+            ui.label(egui::RichText::new(count).color(t.text_dim));
         });
     });
 }

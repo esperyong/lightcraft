@@ -1785,5 +1785,16 @@
   "Stack focus brackets": "Apilar series de enfoque",
   "Each focus bracket becomes a collapsed stack: adjust it and focus-stack it as one": "Cada serie de enfoque se convierte en una pila contraída: ajústala y apílala por enfoque como una sola",
   "Stack focus brackets on import": "Apilar series de enfoque al importar",
-  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "Las fotos tomadas con menos de 2 s de diferencia con la misma cámara, objetivo y exposición forman una pila contraída, lista para ajustarla y apilarla por enfoque como una sola."
+  "Photos shot within 2 s of each other with the same camera, lens and exposure become one collapsed stack, ready to adjust and focus-stack as one.": "Las fotos tomadas con menos de 2 s de diferencia con la misma cámara, objetivo y exposición forman una pila contraída, lista para ajustarla y apilarla por enfoque como una sola.",
+  "Use Source Settings": "Usar los ajustes de las fotos",
+  "The result takes the photos' white balance, tone, colour, detail and lens corrections (not crop, masks or geometry)": "El resultado toma el balance de blancos, el tono, el color, el detalle y las correcciones de objetivo de las fotos (no el recorte, las máscaras ni la geometría)",
+  "Auto-Stack Focus Brackets": "Apilar series de enfoque automáticamente",
+  "Auto-Stack Focus Brackets…": "Apilar series de enfoque automáticamente…",
+  "Frames of a bracket are at most this far apart:": "Las tomas de una serie están separadas como máximo:",
+  "Same exposure (leaves exposure brackets for HDR out)": "Misma exposición (deja fuera las series de exposición para HDR)",
+  "Each becomes a collapsed stack: select it to adjust or focus-stack the whole bracket.": "Cada una se convierte en una pila contraída: selecciónala para ajustar o apilar por enfoque toda la serie.",
+  "Focus bracket — click to expand (S)": "Serie de enfoque: haz clic para expandir (S)",
+  "Focus bracket — click to collapse (S)": "Serie de enfoque: haz clic para contraer (S)",
+  "Stack — click to expand (S)": "Pila: haz clic para expandir (S)",
+  "Stack — click to collapse (S)": "Pila: haz clic para contraer (S)"
 }

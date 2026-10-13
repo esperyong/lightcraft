@@ -1931,10 +1931,20 @@ pub(crate) fn filmstrip(app: &mut LightcraftApp, ui: &mut egui::Ui, r: Rect) {
                     let text =
                         if st.collapsed { st.photos.len().to_string() } else { format!("{}/{}", st.position(*id).unwrap_or(0) + 1, st.photos.len()) };
                     let g = p.layout_no_wrap(text, t.semibold(9.5), Color32::WHITE);
-                    let br = Rect::from_min_size(fr.min + vec2(3.0, 3.0), vec2(g.size().x + 22.0, 15.0));
+                    let focus = st.kind == lightcraft_catalog::StackKind::FocusBracket;
+                    let gw = g.size().x;
+                    let br = Rect::from_min_size(fr.min + vec2(3.0, 3.0), vec2(gw + if focus { 34.0 } else { 22.0 }, 15.0));
                     p.rect_filled(br, 7.5, Color32::from_black_alpha(170));
                     crate::icons::paint(p, Rect::from_min_size(br.min + vec2(4.0, 2.0), vec2(11.0, 11.0)), crate::icons::Icon::Stack, Color32::WHITE);
                     p.galley(pos2(br.min.x + 17.0, br.center().y - g.size().y / 2.0), g, Color32::WHITE);
+                    if focus {
+                        crate::icons::paint(
+                            p,
+                            Rect::from_min_size(br.min + vec2(20.0 + gw, 2.0), vec2(11.0, 11.0)),
+                            crate::icons::Icon::FocusBracket,
+                            Color32::WHITE,
+                        );
+                    }
                 }
             }
             if resp.clicked() {

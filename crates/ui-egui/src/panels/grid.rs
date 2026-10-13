@@ -808,16 +808,20 @@ pub fn stack_badge(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, sid:
     let Some(st) = app.session.catalog.stack(sid) else { return };
     let n = st.photos.len();
     let collapsed = st.collapsed;
+    let focus = st.kind == lightcraft_catalog::StackKind::FocusBracket;
     let text = if collapsed { n.to_string() } else { format!("{}/{n}", pos + 1) };
     let p = ui.painter();
     let g = p.layout_no_wrap(text, t.semibold(11.0), Color32::WHITE);
     let origin = if square { r.min + vec2(10.0, 26.0) } else { r.min + vec2(5.0, 5.0) };
-    let br = Rect::from_min_size(origin, vec2(g.size().x + 30.0, 20.0));
-    let resp = ui.interact(br, egui::Id::new(("stack-badge", id.0)), Sense::click()).on_hover_text(if collapsed {
-        "Stack — click to expand (S)"
-    } else {
-        "Stack — click to collapse (S)"
-    });
+    // a focus bracket says so after the count
+    let br = Rect::from_min_size(origin, vec2(g.size().x + if focus { 46.0 } else { 30.0 }, 20.0));
+    let hover = match (focus, collapsed) {
+        (true, true) => "Focus bracket — click to expand (S)",
+        (true, false) => "Focus bracket — click to collapse (S)",
+        (false, true) => "Stack — click to expand (S)",
+        (false, false) => "Stack — click to collapse (S)",
+    };
+    let resp = ui.interact(br, egui::Id::new(("stack-badge", id.0)), Sense::click()).on_hover_text(crate::i18n::tr(hover));
     register(ui.ctx(), format!("stack:{}", id.0), br);
     let fill = if resp.hovered() { Color32::from_black_alpha(220) } else { Color32::from_black_alpha(165) };
     p.rect_filled(br, 10.0, fill);
@@ -825,7 +829,11 @@ pub fn stack_badge(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, sid:
         p.rect_stroke(br, 10.0, Stroke::new(1.0, t.accent), StrokeKind::Inside);
     }
     paint(p, Rect::from_min_size(br.min + vec2(6.0, 3.0), vec2(14.0, 14.0)), Icon::Stack, Color32::WHITE);
+    let gw = g.size().x;
     p.galley(pos2(br.min.x + 24.0, br.center().y - g.size().y / 2.0), g, Color32::WHITE);
+    if focus {
+        paint(p, Rect::from_min_size(br.min + vec2(28.0 + gw, 3.0), vec2(14.0, 14.0)), Icon::FocusBracket, Color32::WHITE);
+    }
     if resp.clicked() {
         let _ = app.run("stack.toggle", json!({"ids": [id.0]}));
     }
@@ -922,6 +930,9 @@ pub fn context_menu(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         if ui.button(crate::i18n::tr("Auto-Stack by Capture Time…")).clicked() {
             let _ = app.run("dialog.autoStack", json!({}));
         }
+        if ui.button(crate::i18n::tr("Auto-Stack Focus Brackets…")).clicked() {
+            let _ = app.run("dialog.autoStackFocus", json!({}));
+        }
     });
     ui.separator();
     if ui.button(crate::i18n::tr("Copy Edit Settings")).clicked() {
@@ -937,14 +948,15 @@ pub fn context_menu(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         let _ = app.run("develop.reset", json!({}));
     }
     ui.menu_button(crate::i18n::tr("Photo Merge"), |ui| {
-        let n = app.session.targets(&json!({})).len();
+        // a collapsed stack (e.g. a focus bracket) stands for its photos
+        let can = crate::merge::can_merge(app);
         for (id, label) in [
             ("dialog.mergeHdr", "HDR…"),
             ("dialog.mergePanorama", "Panorama…"),
             ("dialog.mergeHdrPanorama", "HDR Panorama…"),
             ("dialog.mergeFocusStack", "Focus Stack…"),
         ] {
-            if ui.add_enabled(n >= 2, egui::Button::new(label)).clicked() {
+            if ui.add_enabled(can, egui::Button::new(label)).clicked() {
                 let _ = app.run(id, json!({}));
             }
         }

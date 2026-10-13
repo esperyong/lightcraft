@@ -593,6 +593,13 @@ pub enum Dialog {
     AutoStack {
         gap: f32,
     },
+    /// Auto-stack focus brackets (`merge.detectFocusBrackets`): the largest gap between frames, in
+    /// seconds, and whether frames must share their exposure.
+    AutoStackFocus {
+        gap: f32,
+        #[serde(rename = "sameExposure")]
+        same_exposure: bool,
+    },
     /// Save the current view (source + filter) as a smart album.
     NewSmartAlbum {
         name: String,

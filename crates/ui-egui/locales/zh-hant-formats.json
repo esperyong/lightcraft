@@ -210,5 +210,9 @@
   "Analyzed {} photos": "已分析 {} 張照片",
   "Analyzed {} photos ({} could not be analyzed)": "已分析 {} 張照片（{} 張無法分析）",
   "Analyzing photos: {done} of {total}": "正在分析照片：{done}／{total}",
-  " · {} focus bracket{} stacked": " · 已將 {0} 組對焦包圍堆疊{1:.0}"
+  " · {} focus bracket{} stacked": " · 已將 {0} 組對焦包圍堆疊{1:.0}",
+  "{g} stacks, merged one by one": "{g} 個堆疊，逐組合成",
+  "{n} photos (from a stack)": "{n} 張（來自堆疊）",
+  "Finds {} focus bracket{} ({} photos) among {scope}": "在{scope}中找到 {0} 組對焦包圍（共 {2} 張）{1:.0}",
+  "Stacked {} focus bracket{} ({} already were)": "已堆疊 {0} 組對焦包圍（{2} 組原已堆疊）{1:.0}"
 }

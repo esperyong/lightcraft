@@ -14,6 +14,13 @@
 - Photo Merge ▸ Retouch Focus Stack… paints over a stack with pixels from one of its photos or from another method,
   to mend a halo or a lost bristle; the strokes stay editable.
 - With a GPU, methods A and B stack on it.
+- Focus brackets as stacks: Photo ▸ Stack ▸ Auto-Stack Focus Brackets… (or Settings ▸ Import ▸ Stack focus brackets
+  on import) makes each bracket a collapsed stack, marked on its badge. Adjust its top photo and Sync (or turn on
+  Auto Sync): the whole bracket follows. Then select the stack's cell and Focus Stack… merges the whole bracket
+  — several selected stacks one by one — and the result goes on top of its stack.
+- Merges (focus stack, HDR, panorama) of photos you adjusted keep the adjustments — white balance, tone, colour,
+  detail, profile, lens corrections — instead of starting over from the as-shot white balance and Auto Settings.
+  Crop, masks and geometry stay behind. Merging the same photos again makes a new photo every time.
 - Merges of Sony, Nikon, Fujifilm and other raws without colour matrices (HDR, panorama and focus stack) keep their
   white balance and camera look: they used to open green and too dark.
 

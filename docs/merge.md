@@ -12,12 +12,28 @@ All algorithms are our own implementations from published papers (cited in the m
   an option changes (slider drags after a short pause; previews already made come back at once);
   *Merge* runs the full merge in the background (progress in a toast). The result is written next to
   the first photo as `<name>-HDR.dng`, `-Pano.dng`, `-HDR-Pano.dng` or `-Focus.dng`, imported and
-  selected.
+  selected. Every merge makes a new photo, also when the same photos are merged again with the same
+  options (each DNG has its own `RawDataUniqueID`).
+- **Brackets as stacks** (#24): *Photo ▸ Stack ▸ Auto-Stack Focus Brackets…* (or *Settings ▸ Import ▸
+  Stack focus brackets on import*) makes each focus bracket a collapsed stack, marked on its badge. A
+  selected collapsed stack stands for all its photos: one click on its cell and *Focus Stack…* merges
+  the whole bracket ("12 photos (from a stack)"), several selected stacks are focus-stacked (or
+  HDR-merged) one by one ("3 stacks, merged one by one"), and the result goes on top of its stack.
+  Adjust the bracket first (Sync, Paste, presets and Auto Sync also reach the whole collapsed stack):
+  the result takes the settings (below, *Adjust first, then merge*).
 - **Commands** (CLI, MCP, control channel):
-  - `merge.hdr {ids?, align=true, deghost=none|low|medium|high, autoSettings=true, stack=false, preview=false, showOverlay=false, previewPath?}`
-  - `merge.panorama {ids?, projection=auto|spherical|cylindrical|perspective, boundaryWarp=0..100, autoCrop=false, fillEdges=false, autoSettings=true, maxMegapixels=40, preview, previewPath?}`
+  - `merge.hdr {ids?, align=true, deghost=none|low|medium|high, autoSettings, sourceSettings=true, stack, preview=false, showOverlay=false, previewPath?}`
+  - `merge.panorama {ids?, projection=auto|spherical|cylindrical|perspective, boundaryWarp=0..100, autoCrop=false, fillEdges=false, autoSettings, sourceSettings=true, stack, maxMegapixels=40, preview, previewPath?}`
   - `merge.hdrPanorama {ids?, bracket=0 (from EXIF), …both sets of options}`
-  - `merge.focusStack {ids?, method=depth|average|pyramid (or b|a|c), radius=1..30 (8), smoothing=0..10 (4), align=true, alignShift, alignRotation, alignScale, alignBrightness, order=capture|selection|reverse|auto, every=1, reference=middle|first|sharpest, crop=common|reference, maxMegapixels=0, depthPath?, autoSettings=true, stack=false, preview, showDepth, previewPath?}`
+  - `merge.focusStack {ids?, method=depth|average|pyramid (or b|a|c), radius=1..30 (8), smoothing=0..10 (4), align=true, alignShift, alignRotation, alignScale, alignBrightness, order=capture|selection|reverse|auto, every=1, reference=middle|first|sharpest, crop=common|reference, maxMegapixels=0, depthPath?, autoSettings, sourceSettings=true, stack, preview, showDepth, previewPath?}`
+  - Without `ids` they take the selection, a photo of a collapsed stack standing for the stack's
+    photos (merge results, virtual copies and videos left out, so a stack topped by an earlier merge
+    is merged again from its frames); `expandStacks: true` does the same for explicit `ids`. Two or
+    more collapsed stacks and nothing else: `merge.focusStack` and `merge.hdr` merge each on its own
+    and answer `{results, failed, count, perStack: true}` (a preview shows the first, `stacks: n`).
+  - `stack` defaults to on when the photos are all in one stack: the result goes on its top, the
+    stack's order kept. `autoSettings` defaults to on unless the result takes edited photos'
+    settings; `sourceSettings: false` gives the old as-shot + Auto look.
 - **CLI:** `lightcraft-cli merge hdr|panorama|hdr-panorama|focus [options] FILES…`;
   `lightcraft-cli synth-merge hdr|panorama|focus -o DIR` writes synthetic inputs (procedural scenes).
 
@@ -114,9 +130,16 @@ the fuse pass ran (`device`), the share of gathered pixels and the seconds each 
 
 **Many brackets.** `merge.detectFocusBrackets {ids?, gapSecs=2, minFrames=3, sameExposure=true, stack}`
 finds focus brackets (runs of photos at most `gapSecs` apart with the same camera, lens, focal length
-and exposure; merge results are left out) in the given photos, the selection or the photos shown, and
-optionally stacks each. `merge.focusStackBatch {groups? | the same scope, …merge.focusStack options}`
-stacks them one after the other (a bracket that fails is reported, the others still run). In the app,
+and exposure; merge results and virtual copies are left out) in the given photos, the selection (two or
+more cells) or the photos shown — the hidden members of collapsed stacks included — and with
+`stack: true` makes each a collapsed stack of its own (`kind: focusBracket`, catalog format 5): its
+photos leave the stacks they were in (a capture-time stack holding two brackets splits in two), a
+stack that already is the bracket (merge results on top allowed) is kept, and the whole run is one
+undo step (`{groups, count, photos, stacked, unchanged}`). `library.import {stackFocusBrackets}` (by
+default the library preference) does it for the photos an import brings in.
+`merge.focusStackBatch {groups? | …}` stacks one bracket after the other (a bracket that fails is
+reported, the others still run): without `groups`, each selected collapsed stack as it is — with no
+selection, each focus-bracket stack shown — and the brackets found among the other photos. In the app,
 Photo Merge ▸ Focus Stack Each Bracket queues them in the background with the last focus-stack options.
 
 **Retouching.** Every stack saves what it was made from beside its DNG, `<dng>.lcfocus.json`: the frames
@@ -142,7 +165,40 @@ white balance (`AsShotNeutral`) and the generic camera model LightCraft falls ba
 (`ColorMatrix1`/`ForwardMatrix1`, `frame::camera_color`), and the look LightCraft fits to its camera JPEG
 travels in `DNGPrivateData` (`LightCraft`, JSON: matrix, tone and chroma curve, hue/saturation table),
 so the merge opens looking like its reference photo. Other sources get `ColorMatrix1`/`ForwardMatrix1`
-of their RGB space.
+of their RGB space. The reference photo's embedded lens corrections (`WarpRectilinear`,
+`FixVignetteRadial` in `OpcodeList3`) go into HDR and focus-stack DNGs (below), and every merged DNG
+gets a `RawDataUniqueID` of its own.
+
+## Adjust first, then merge (#24)
+
+When the photos were edited, the result starts from the settings of its reference photo — the HDR's
+middle exposure, the focus stack's alignment reference, the panorama's first photo; when that one is
+unedited, the first edited photo — instead of the as-shot white balance and Auto Settings
+(`crates/engine/src/merge_look.rs`; `info.settingsFrom` names the photo; the preview shows them too):
+
+- **Taken:** profile, treatment, white balance, light, tone curve, colour, colour mixer and point
+  colour, colour grading, effects, vignette, grain, detail (sharpening and noise reduction), optics
+  (lens corrections, chromatic aberration, defringe, manual distortion and vignetting) and calibration,
+  with the on/off state of their panel sections. A panorama keeps its own lens profile, distortion and
+  vignetting (its picture is a projection of all the frames).
+- **Left behind:** crop and orientation, Upright and transforms, masks, spot removal, red eye and lens
+  blur (the result is aligned and cut differently), and Enhance — AI denoise, raw details, super
+  resolution work on raw sensor data the LinearRaw DNG no longer has. Nothing is applied to the frames
+  before merging.
+- **White balance:** a DNG source's absolute white balance is copied (the result carries the reference
+  frame's colour tags). Most vendor raws (ARW, NEF, RW2, RAF, CR2/CR3, PEF, SRW) and rendered files keep
+  white balance relative to their as-shot white, while the merged DNG has an absolute one; such a
+  setting becomes the Custom white that makes the same correction from the result's as-shot white
+  (`lightcraft_color::transfer_white`: cone responses LMS(result as-shot) · LMS(set) / LMS(as-shot),
+  the same matrix where both render with Bradford adaptation; on the ARW corpus the adjusted result
+  renders within 3/255 of its source). As Shot stays the result's own as-shot.
+- **Lens corrections:** the reference photo's embedded corrections are written into the DNG — an HDR
+  as they are (same geometry), a focus stack moved with its cut of the reference frame
+  (`pipeline::optics::crop_lens`, `files::lens_opcodes`: the inverse of reading them, coefficients
+  re-scaled to the opcodes' normalisation radius) — so the result opens with Lens Corrections on like
+  its sources, and retouching keeps them. A panorama gets none.
+- Auto Settings is off by default then (on top it would undo the exposure you chose); unedited photos
+  give the old look (as-shot white balance, Auto Settings). `sourceSettings: false` asks for that too.
 
 ## Measured (synthetic tests, `cargo test -p lightcraft-merge`)
 
@@ -189,8 +245,11 @@ of their RGB space.
 - No camera response calibration for JPEG brackets (sRGB decoding is taken as linear light).
 - Boundary Warp is a separable stretch, not a content-preserving mesh warp; Fill Edges is diffusion,
   not patch synthesis.
-- *Create Stack*: the result goes on top of a collapsed stack of its sources (`Catalog::stack_with_ops`); its
-  caption also lists them.
+- *Create Stack*: the result goes on top of the stack its sources share, the stack's order and
+  collapsed state kept (`Catalog::push_top_ops`), else on top of a new collapsed stack of its sources
+  (`Catalog::stack_with_ops`, which merges the stacks they were in); its caption also lists them.
+- A white balance carried over from rendered photos (JPEG, PNG, TIFF: relative) to their merge, which
+  re-balances in its own colour space rather than with Bradford, is close but not exact.
 - Panorama output is limited to `maxMegapixels` (default 40) — blending memory is ~25 bytes/pixel.
 - The browser build has no file access for merges yet.
 - Focus stack: method C, the depth refinement and the gather pass run on the CPU, and raws are

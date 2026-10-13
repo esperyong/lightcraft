@@ -98,7 +98,7 @@ fn writer_roundtrip_all_layouts() {
             let raw = synthetic(w, h, cfa, cpp);
             for comp in [DngCompression::Uncompressed, DngCompression::Lj92 { tile: 16 }, DngCompression::Lj92 { tile: 256 }] {
                 for order in [ByteOrder::Little, ByteOrder::Big] {
-                    let bytes = write_dng(&raw, &DngWriteOptions { compression: comp, order, xmp: None }).unwrap();
+                    let bytes = write_dng(&raw, &DngWriteOptions { compression: comp, order, xmp: None, ..Default::default() }).unwrap();
                     assert_eq!(probe(&bytes), Some(RawFormat::Dng));
                     let back = decode(&bytes).unwrap();
                     assert_same(&raw, &back);
@@ -117,8 +117,11 @@ fn deflate_roundtrips_integer_and_float() {
             let cpp = if cfa.is_some() { 1 } else { 3 };
             let raw = synthetic(w, h, cfa, cpp);
             for order in [ByteOrder::Little, ByteOrder::Big] {
-                let bytes =
-                    write_dng(&raw, &DngWriteOptions { compression: DngCompression::Deflate { tile: 32, half: false }, order, xmp: None }).unwrap();
+                let bytes = write_dng(
+                    &raw,
+                    &DngWriteOptions { compression: DngCompression::Deflate { tile: 32, half: false }, order, xmp: None, ..Default::default() },
+                )
+                .unwrap();
                 assert_same(&raw, &decode(&bytes).unwrap());
             }
         }
@@ -988,4 +991,62 @@ fn baseline_sharpness_is_read_when_plausible() {
     });
     assert_eq!(decode(&bytes).unwrap().color.baseline_sharpness, None);
     assert_eq!(decode(&profile_dng(ByteOrder::Big, |_| {})).unwrap().color.baseline_sharpness, None);
+}
+
+#[test]
+fn written_semantic_masks_read_back() {
+    use lightcraft_raw::SemanticMask;
+    use lightcraft_raw::semantic::MaskSubArea;
+    let raw = synthetic(64, 40, None, 3);
+    let depth = SemanticMask {
+        name: "urn:app:lightcraft:focus:depth".into(),
+        instance_id: None,
+        width: 30,
+        height: 19,
+        sub_area: None,
+        data: (0..30 * 19).map(|i| (i * 97 % 65536) as u16).collect(),
+    };
+    let part = SemanticMask {
+        name: "urn:test:part".into(),
+        instance_id: Some("2".into()),
+        width: 8,
+        height: 6,
+        sub_area: Some(MaskSubArea { top: 3, left: 4, full_width: 30, full_height: 19 }),
+        data: vec![65535; 48],
+    };
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let opts = DngWriteOptions {
+            compression: DngCompression::Deflate { tile: 32, half: false },
+            order,
+            semantic_masks: vec![depth.clone(), part.clone()],
+            ..Default::default()
+        };
+        let bytes = write_dng(&raw, &opts).unwrap();
+        assert_eq!(lightcraft_raw::semantic_masks(&bytes), vec![depth.clone(), part.clone()]);
+        // the image itself is untouched by the extra IFDs
+        assert_eq!(decode(&bytes).unwrap().data, raw.data);
+    }
+    // a mask that doesn't match its size is refused, not written broken
+    let bad = SemanticMask { data: vec![0; 5], ..depth };
+    assert!(write_dng(&raw, &DngWriteOptions { semantic_masks: vec![bad], ..Default::default() }).is_err());
+}
+
+#[test]
+fn written_private_data_reads_back_by_name() {
+    let raw = synthetic(64, 40, None, 3);
+    let mut data = b"LightCraft\0".to_vec();
+    data.extend_from_slice(br#"{"look":1}"#);
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let bytes = write_dng(&raw, &DngWriteOptions { order, private_data: Some(data.clone()), ..Default::default() }).unwrap();
+        assert_eq!(lightcraft_raw::dng_private_data(&bytes, "LightCraft").as_deref(), Some(&br#"{"look":1}"#[..]));
+        assert_eq!(lightcraft_raw::dng_private_data(&bytes, "Adobe"), None);
+        assert_eq!(lightcraft_raw::dng_private_data(&bytes, "Light"), None, "the whole name must match");
+        assert_eq!(decode(&bytes).unwrap().data, raw.data);
+    }
+    let plain = write_dng(&raw, &DngWriteOptions::default()).unwrap();
+    assert_eq!(lightcraft_raw::dng_private_data(&plain, "LightCraft"), None);
+    assert_eq!(lightcraft_raw::dng_private_data(b"not a tiff", "LightCraft"), None);
+    // without a NUL-terminated name it isn't DNG private data: refused, not written
+    assert!(write_dng(&raw, &DngWriteOptions { private_data: Some(b"no name".to_vec()), ..Default::default() }).is_err());
+    assert!(write_dng(&raw, &DngWriteOptions { private_data: Some(Vec::new()), ..Default::default() }).is_err());
 }

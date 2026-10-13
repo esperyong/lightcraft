@@ -1,10 +1,13 @@
-//! Photo Merge in the UI: the HDR / Panorama / HDR Panorama dialog (options + live preview) and
-//! the background merge jobs.
+//! Photo Merge in the UI: the HDR / Panorama / HDR Panorama / Focus Stack dialog (options + live
+//! preview) and the background merge jobs.
 //!
 //! Previews and the final merge run [`lightcraft_engine::merge::MergeJob`]s on worker threads with
 //! progress and cancellation; the window stays responsive. Changing an option cancels the running
-//! preview and starts a new one. The final merge keeps running after the dialog closes (progress
-//! in a toast); when it finishes, the result is written, imported and selected
+//! preview and starts a new one (slider changes after a 250 ms pause, so a drag doesn't start a
+//! preview per frame). Finished previews are kept per option set, so switching back (say, between
+//! focus-stack methods A, B and C) is instant; a focus stack's depth map comes with its preview, so
+//! showing it doesn't run anything. The final merge keeps running after the dialog closes
+//! (progress in a toast); when it finishes, the result is written, imported and selected
 //! ([`lightcraft_engine::Session::finish_merge`]).
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,6 +40,24 @@ pub struct MergeDialog {
     pub fill_edges: bool,
     /// HDR panorama: photos per bracket (0 = from EXIF).
     pub bracket: u32,
+    /// Focus stack: depth | average | pyramid (B, A, C).
+    pub method: String,
+    pub radius: f64,
+    pub smoothing: f64,
+    /// capture | selection | reverse | auto
+    pub order: String,
+    pub align_shift: bool,
+    pub align_rotation: bool,
+    pub align_scale: bool,
+    pub align_brightness: bool,
+    /// Preview every n-th photo (0 = automatic, about 12 photos).
+    pub every: u32,
+    /// Merge with the preview's `every` too (else every photo).
+    pub every_final: bool,
+    /// Show the depth map instead of the stacked preview (no new run).
+    pub show_depth: bool,
+    /// Store the depth map in the DNG (Depth Range masks select on it).
+    pub depth_map: bool,
 }
 
 impl Default for MergeDialog {
@@ -53,6 +74,18 @@ impl Default for MergeDialog {
             auto_crop: true,
             fill_edges: false,
             bracket: 0,
+            method: "depth".into(),
+            radius: 8.0,
+            smoothing: 4.0,
+            order: "capture".into(),
+            align_shift: true,
+            align_rotation: true,
+            align_scale: true,
+            align_brightness: true,
+            every: 0,
+            every_final: false,
+            show_depth: false,
+            depth_map: true,
         }
     }
 }
@@ -65,19 +98,59 @@ impl MergeDialog {
         match self.command.as_str() {
             "merge.panorama" => "Panorama Merge Preview",
             "merge.hdrPanorama" => "HDR Panorama Merge Preview",
+            "merge.focusStack" => "Focus Stack Preview",
             _ => "HDR Merge Preview",
         }
     }
     pub fn is_hdr(&self) -> bool {
-        self.command != "merge.panorama"
+        matches!(self.command.as_str(), "merge.hdr" | "merge.hdrPanorama")
     }
     pub fn is_pano(&self) -> bool {
-        self.command != "merge.hdr"
+        matches!(self.command.as_str(), "merge.panorama" | "merge.hdrPanorama")
     }
-    pub fn params(&self) -> Value {
-        serde_json::to_value(self).unwrap_or_default()
+    pub fn is_focus(&self) -> bool {
+        self.command == "merge.focusStack"
+    }
+    /// The command parameters for a preview or the merge itself.
+    pub fn params(&self, preview: bool) -> Value {
+        let mut v = serde_json::to_value(self).unwrap_or_default();
+        if self.is_focus() {
+            // the depth map comes with every preview; the dialog picks what to show
+            v["showDepth"] = json!(false);
+            v["every"] = json!(if preview {
+                self.every
+            } else if self.every_final {
+                self.every.max(1)
+            } else {
+                1
+            });
+        }
+        v
+    }
+    /// The options a preview depends on (what is shown of it aside).
+    pub fn preview_key(&self) -> MergeDialog {
+        MergeDialog { show_depth: false, every_final: false, depth_map: true, ..self.clone() }
+    }
+    /// Only slider values differ from `other` (the preview waits for the drag to pause).
+    fn slider_change(&self, other: &MergeDialog) -> bool {
+        let strip = |d: &MergeDialog| MergeDialog { radius: 0.0, smoothing: 0.0, every: 0, boundary_warp: 0.0, bracket: 0, ..d.preview_key() };
+        strip(self) == strip(other)
     }
 }
+
+/// A finished preview: the rendered result, the depth map (focus stacks), their size, the stats.
+#[derive(Clone)]
+pub struct CachedPreview {
+    pub key: MergeDialog,
+    pub tex: egui::TextureHandle,
+    pub pixels: Arc<egui::ColorImage>,
+    pub depth: Option<(egui::TextureHandle, Arc<egui::ColorImage>)>,
+    pub size: [usize; 2],
+    pub info: Value,
+}
+
+/// Previews kept for instant switching back.
+const CACHED_PREVIEWS: usize = 8;
 
 /// A merge running on a worker thread.
 pub struct MergeTask {
@@ -107,6 +180,15 @@ pub struct MergeState {
     pub ids: Vec<PhotoId>,
     /// The options of the last merge started, per kind ("merge.hdr" …): Merge with Last Settings.
     pub last: std::collections::HashMap<String, MergeDialog>,
+    /// Finished previews, most recent last.
+    pub cache: Vec<CachedPreview>,
+    /// Focus brackets waiting to be stacked after the running merge, with their options, and how
+    /// many the batch had.
+    pub queue: std::collections::VecDeque<Vec<PhotoId>>,
+    pub queue_opts: Option<MergeDialog>,
+    pub queue_total: usize,
+    /// Options changed by a slider and when (the preview starts once they rest).
+    pub pending: Option<(MergeDialog, f64)>,
 }
 
 impl MergeState {
@@ -117,7 +199,7 @@ impl MergeState {
 }
 
 fn spawn(app: &LightcraftApp, options: &MergeDialog, ids: &[PhotoId], preview: bool) -> Result<MergeTask, String> {
-    let (kind, finish) = lightcraft_engine::merge::parse(&options.command, &options.params()).map_err(|e| e.to_string())?;
+    let (kind, finish) = lightcraft_engine::merge::parse(&options.command, &options.params(preview)).map_err(|e| e.to_string())?;
     let job = app.session.plan_merge(kind, finish, ids, preview).map_err(|e| e.to_string())?;
     let progress = Arc::new(Mutex::new((0.0, "Starting".to_string())));
     let cancel = Arc::new(AtomicBool::new(false));
@@ -153,10 +235,15 @@ pub fn open(app: &mut LightcraftApp, command: &str) -> Result<Value, String> {
     app.merge.error = None;
     app.merge.preview = None;
     app.merge.preview_pixels = None;
+    app.merge.cache.clear();
+    app.merge.pending = None;
+    app.merge.failed_options = None;
     if let Some(t) = app.merge.preview_task.take() {
         t.cancel.store(true, Ordering::Relaxed);
     }
-    app.ui.dialog = Some(crate::state::Dialog::Merge { opts: MergeDialog::for_command(command) });
+    // the dialog opens with the options of the last merge of its kind
+    let opts = app.merge.last.get(command).cloned().unwrap_or_else(|| MergeDialog::for_command(command));
+    app.ui.dialog = Some(crate::state::Dialog::Merge { opts });
     Ok(json!({"photos": app.merge.ids.len()}))
 }
 
@@ -175,6 +262,40 @@ pub fn start_final(app: &mut LightcraftApp, opts: &MergeDialog) -> Result<Value,
     Ok(json!({"started": true, "photos": ids.len()}))
 }
 
+/// Focus-stack every focus bracket in the selection (or the photos shown), one after the other
+/// in the background, with the options of the last focus stack.
+pub fn start_brackets(app: &mut LightcraftApp) -> Result<Value, String> {
+    if app.merge.final_task.is_some() {
+        return Err("a merge is already running".into());
+    }
+    let r = app.session.execute("merge.detectFocusBrackets", &json!({})).map_err(|e| e.to_string())?;
+    let groups: Vec<Vec<PhotoId>> = r["groups"]
+        .as_array()
+        .map(|a| a.iter().map(|g| g.as_array().map(|v| v.iter().filter_map(Value::as_u64).map(PhotoId).collect()).unwrap_or_default()).collect())
+        .unwrap_or_default();
+    if groups.is_empty() {
+        return Err("no focus brackets found (photos shot within 2 s of each other with the same camera settings)".into());
+    }
+    let opts = app.merge.last.get("merge.focusStack").cloned().unwrap_or_else(|| MergeDialog::for_command("merge.focusStack"));
+    app.merge.queue_total = groups.len();
+    app.merge.queue = groups.into();
+    app.merge.queue_opts = Some(opts);
+    start_queued(app)?;
+    Ok(json!({"brackets": app.merge.queue_total}))
+}
+
+/// Start the next queued bracket.
+fn start_queued(app: &mut LightcraftApp) -> Result<(), String> {
+    let (Some(ids), Some(opts)) = (app.merge.queue.pop_front(), app.merge.queue_opts.clone()) else {
+        app.merge.queue_opts = None;
+        return Ok(());
+    };
+    let task = spawn(app, &opts, &ids, false)?;
+    app.merge.ids = ids;
+    app.merge.final_task = Some(task);
+    Ok(())
+}
+
 /// Merge the selection without the dialog, with the options last used for `command` (the
 /// defaults the first time).
 pub fn start_last(app: &mut LightcraftApp, command: &str) -> Result<Value, String> {
@@ -187,6 +308,16 @@ pub fn start_last(app: &mut LightcraftApp, command: &str) -> Result<Value, Strin
     start_final(app, &opts)
 }
 
+/// Show `c` as the dialog's preview (the depth map when asked).
+fn show_cached(app: &mut LightcraftApp, c: &CachedPreview, depth: bool) {
+    let (tex, px) = match (&c.depth, depth) {
+        (Some((t, p)), true) => (t.clone(), p.clone()),
+        _ => (c.tex.clone(), c.pixels.clone()),
+    };
+    app.merge.preview_pixels = Some(px);
+    app.merge.preview = Some((tex, c.size, c.key.clone(), c.info.clone()));
+}
+
 /// Per frame: keep the preview in sync with the dialog's options, collect finished jobs.
 pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
     // preview for the open dialog
@@ -196,21 +327,53 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
     };
     match &dialog_opts {
         Some(opts) => {
-            let current = app.merge.preview_task.as_ref().map(|t| &t.options).or(app.merge.preview.as_ref().map(|p| &p.2));
-            let stale = current != Some(opts) && !last_failed_matches(app, opts);
-            if stale {
-                if let Some(t) = app.merge.preview_task.take() {
+            let key = opts.preview_key();
+            let now = ctx.input(|i| i.time);
+            if let Some(c) = app.merge.cache.iter().find(|c| c.key == key).cloned() {
+                // a preview for these options exists: show it, stop working on others
+                if app.merge.preview.as_ref().is_none_or(|p| p.2 != key)
+                    || app.merge.preview_pixels.is_none()
+                    || opts.show_depth != showing_depth(app)
+                {
+                    show_cached(app, &c, opts.show_depth);
+                }
+                if let Some(t) = app.merge.preview_task.take_if(|t| t.options != key) {
                     t.cancel.store(true, Ordering::Relaxed);
                 }
-                let ids = app.merge.ids.clone();
-                match spawn(app, opts, &ids, true) {
-                    Ok(t) => {
-                        app.merge.error = None;
-                        app.merge.preview_task = Some(t);
-                    }
-                    Err(e) => {
-                        app.merge.error = Some(e);
-                        app.merge.failed_options = Some(opts.clone());
+                app.merge.pending = None;
+                app.merge.error = None;
+            } else {
+                let running = app.merge.preview_task.as_ref().map(|t| &t.options);
+                let stale = running != Some(&key) && !last_failed_matches(app, &key);
+                if stale {
+                    // slider drags wait for a 250 ms pause; other changes start at once
+                    let base = running.or(app.merge.preview.as_ref().map(|p| &p.2));
+                    let wait = base.is_some_and(|b| key.slider_change(b));
+                    let ready = match &app.merge.pending {
+                        Some((k, t)) if *k == key => now - t >= 0.25,
+                        _ => {
+                            app.merge.pending = Some((key.clone(), now));
+                            !wait
+                        }
+                    };
+                    if ready {
+                        app.merge.pending = None;
+                        if let Some(t) = app.merge.preview_task.take() {
+                            t.cancel.store(true, Ordering::Relaxed);
+                        }
+                        let ids = app.merge.ids.clone();
+                        match spawn(app, &key, &ids, true) {
+                            Ok(t) => {
+                                app.merge.error = None;
+                                app.merge.preview_task = Some(t);
+                            }
+                            Err(e) => {
+                                app.merge.error = Some(e);
+                                app.merge.failed_options = Some(key.clone());
+                            }
+                        }
+                    } else {
+                        ctx.request_repaint_after(std::time::Duration::from_millis(60));
                     }
                 }
             }
@@ -228,8 +391,26 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
                 if let Some(img) = out.preview {
                     let color = Arc::new(egui::ColorImage::from_rgba_unmultiplied([img.width, img.height], &img.as_bytes()));
                     let tex = ctx.load_texture("merge-preview", color.clone(), egui::TextureOptions::LINEAR);
-                    app.merge.preview_pixels = Some(color);
-                    app.merge.preview = Some((tex, [img.width, img.height], t.options, out.info));
+                    let depth = out.depth.as_ref().map(|d| {
+                        let rgba: Vec<u8> = d
+                            .data
+                            .iter()
+                            .flat_map(|v| {
+                                let g = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                                [g, g, g, 255]
+                            })
+                            .collect();
+                        let px = Arc::new(egui::ColorImage::from_rgba_unmultiplied([d.width, d.height], &rgba));
+                        (ctx.load_texture("merge-depth", px.clone(), egui::TextureOptions::LINEAR), px)
+                    });
+                    let c = CachedPreview { key: t.options.clone(), tex, pixels: color, depth, size: [img.width, img.height], info: out.info };
+                    let show = dialog_opts.as_ref().is_some_and(|o| o.show_depth);
+                    show_cached(app, &c, show);
+                    app.merge.cache.retain(|x| x.key != c.key);
+                    app.merge.cache.push(c);
+                    if app.merge.cache.len() > CACHED_PREVIEWS {
+                        app.merge.cache.remove(0);
+                    }
                 }
             }
             Ok(Err(e)) => {
@@ -247,12 +428,11 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
         match t.rx.try_recv() {
             Ok(r) => {
                 let Some(t) = app.merge.final_task.take() else { return };
-                let what = if t.options.command == "merge.panorama" {
-                    "Panorama"
-                } else if t.options.command == "merge.hdrPanorama" {
-                    "HDR panorama"
-                } else {
-                    "HDR"
+                let what = match t.options.command.as_str() {
+                    "merge.panorama" => "Panorama",
+                    "merge.hdrPanorama" => "HDR panorama",
+                    "merge.focusStack" => "Focus stack",
+                    _ => "HDR",
                 };
                 match r.map_err(lightcraft_engine::EngineError::Other).and_then(|out| app.session.finish_merge(&t.job, out)) {
                     Ok(v) => {
@@ -264,11 +444,21 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
                         app.toast(ctx, crate::i18n::tr_format!("{what} merge failed: {e}", e = e, what = what));
                     }
                 }
+                // the next focus bracket of a batch
+                if let Err(e) = start_queued(app) {
+                    app.merge.queue.clear();
+                    app.merge.queue_opts = None;
+                    app.ui.status = e;
+                }
             }
             Err(_) => {
                 let (f, stage) = t.progress.lock().map(|g| g.clone()).unwrap_or_default();
                 let now = ctx.input(|i| i.time);
-                app.ui.toast = Some((crate::i18n::tr_format!("Merging… {stage} {:.0}%", f * 100.0, stage = stage), now + 0.5, None));
+                let mut text = crate::i18n::tr_format!("Merging… {stage} {:.0}%", f * 100.0, stage = stage);
+                if app.merge.queue_opts.is_some() && app.merge.queue_total > 1 {
+                    text.push_str(&format!(" · {}/{}", app.merge.queue_total - app.merge.queue.len(), app.merge.queue_total));
+                }
+                app.ui.toast = Some((text, now + 0.5, None));
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
@@ -277,6 +467,14 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
 
 fn last_failed_matches(app: &LightcraftApp, opts: &MergeDialog) -> bool {
     app.merge.failed_options.as_ref() == Some(opts)
+}
+
+/// The dialog shows the depth map now.
+fn showing_depth(app: &LightcraftApp) -> bool {
+    match (&app.merge.preview, app.merge.cache.iter().find(|c| app.merge.preview.as_ref().is_some_and(|p| p.2 == c.key))) {
+        (Some((tex, ..)), Some(c)) => c.depth.as_ref().is_some_and(|(d, _)| d.id() == tex.id()),
+        _ => false,
+    }
 }
 
 /// The dialog body (options on the left, preview on the right).
@@ -307,9 +505,28 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, opts: &mut MergeDialog) 
             if let Some(e) = &app.merge.error {
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, e, t.font(13.0), t.text);
             }
+            if opts.is_focus() {
+                // compare the methods (each preview is kept once computed)
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(crate::i18n::tr("Compare")).color(t.text_label));
+                    for (key, label) in [("a", "A"), ("b", "B"), ("c", "C")] {
+                        let m = method_of(key);
+                        let cached = app.merge.cache.iter().any(|c| c.key == MergeDialog { method: m.into(), ..opts.preview_key() });
+                        let text = if cached && opts.method != m { format!("{label}·") } else { label.to_string() };
+                        if crate::widgets::text_button(ui, &format!("mergeCompare-{key}"), &text, opts.method == m).clicked() {
+                            opts.method = m.into();
+                        }
+                    }
+                    ui.add_space(8.0);
+                    let r = ui.checkbox(&mut opts.show_depth, crate::i18n::tr("Depth Map"));
+                    crate::widgets::register(ui.ctx(), "check:mergeShowDepth", r.rect);
+                });
+            }
             let info = app.merge.preview.as_ref().map(|p| p.3.clone());
             if let Some(info) = info {
-                let txt = if opts.is_pano() {
+                let txt = if opts.is_focus() {
+                    focus_summary(app, &info)
+                } else if opts.is_pano() {
                     format!(
                         "{} photos · {} · {:.0}° × {:.0}°",
                         info["used"].as_array().map_or(0, Vec::len),
@@ -328,7 +545,10 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, opts: &mut MergeDialog) 
         ui.add_space(12.0);
         // options
         ui.vertical(|ui| {
-            ui.set_width(220.0);
+            ui.set_width(if opts.is_focus() { 250.0 } else { 220.0 });
+            if opts.is_focus() {
+                focus_options(ui, opts);
+            }
             if opts.is_pano() {
                 ui.label(egui::RichText::new(crate::i18n::tr("Projection")).color(t.text_label));
                 for (v, l) in [("auto", "Auto Select"), ("spherical", "Spherical"), ("cylindrical", "Cylindrical"), ("perspective", "Perspective")] {
@@ -373,6 +593,137 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, opts: &mut MergeDialog) 
         });
     });
 }
+
+fn method_of(key: &str) -> &'static str {
+    match key {
+        "a" => "average",
+        "c" => "pyramid",
+        _ => "depth",
+    }
+}
+
+/// A checkbox addressable as `check:{id}`.
+fn check(ui: &mut egui::Ui, id: &str, value: &mut bool, label: &str) {
+    let r = ui.checkbox(value, crate::i18n::tr(label));
+    crate::widgets::register(ui.ctx(), format!("check:{id}"), r.rect);
+}
+
+/// The focus-stack options column.
+fn focus_options(ui: &mut egui::Ui, opts: &mut MergeDialog) {
+    let t = crate::theme::Tokens::get(ui.ctx());
+    ui.label(egui::RichText::new(crate::i18n::tr("Method")).color(t.text_label));
+    let methods = [("A Average", "a"), ("B Depth Map", "b"), ("C Pyramid", "c")];
+    let active = methods.iter().position(|(_, k)| method_of(k) == opts.method);
+    if let Some(i) = crate::widgets::segmented(ui, "mergeMethod", &methods, active, 3) {
+        opts.method = method_of(methods[i].1).into();
+    }
+    let hint = match opts.method.as_str() {
+        "average" => "Weights every photo by its sharpness: smooth, true colours, a little soft.",
+        "pyramid" => "Detail bands from the sharpest photos: best for crossing hairs and bristles.",
+        _ => "Each pixel from its sharpest photo: crisp detail and texture.",
+    };
+    ui.label(egui::RichText::new(crate::i18n::tr(hint)).color(t.text_dim).size(11.0));
+    ui.add_space(2.0);
+    let mut r = opts.radius;
+    if num(ui, &RADIUS, &mut r) {
+        opts.radius = r.round();
+    }
+    let mut sm = opts.smoothing;
+    if num(ui, &SMOOTHING, &mut sm) {
+        opts.smoothing = sm.round();
+    }
+    ui.label(egui::RichText::new(crate::i18n::tr("Auto-Adjust")).color(t.text_label));
+    ui.horizontal_wrapped(|ui| {
+        check(ui, "mergeAlignShift", &mut opts.align_shift, "Shift");
+        check(ui, "mergeAlignRotation", &mut opts.align_rotation, "Rotation");
+        check(ui, "mergeAlignScale", &mut opts.align_scale, "Magnification");
+        check(ui, "mergeAlignBrightness", &mut opts.align_brightness, "Brightness");
+    });
+    ui.label(egui::RichText::new(crate::i18n::tr("Focus Order")).color(t.text_label));
+    let orders = [("Capture Time", "capture"), ("Selection", "selection"), ("Reverse", "reverse"), ("Auto", "auto")];
+    let active = orders.iter().position(|(_, k)| *k == opts.order);
+    if let Some(i) = crate::widgets::segmented(ui, "mergeOrder", &orders, active, 2) {
+        opts.order = orders[i].1.into();
+    }
+    let mut e = opts.every as f64;
+    if num(ui, &EVERY, &mut e) {
+        opts.every = e.round().max(0.0) as u32;
+    }
+    if opts.every == 0 {
+        ui.label(egui::RichText::new(crate::i18n::tr("0 = about 12 photos")).color(t.text_dim).size(11.0));
+    }
+    ui.add_enabled_ui(opts.every > 1, |ui| check(ui, "mergeEveryFinal", &mut opts.every_final, "Merge Every n-th Photo Too"));
+    check(ui, "mergeDepthMap", &mut opts.depth_map, "Embed Depth Map");
+    ui.add_space(4.0);
+}
+
+/// The stats line under a focus-stack preview.
+fn focus_summary(app: &LightcraftApp, info: &Value) -> String {
+    let used = info["used"].as_u64().unwrap_or(0);
+    let order: Vec<u64> = info["order"].as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+    let every = if used > 0 && order.len() as u64 == used && (app.merge.ids.len() as u64) > used {
+        format!(" · {}/{}", used, app.merge.ids.len())
+    } else {
+        String::new()
+    };
+    let reference = info["reference"].as_u64().and_then(|id| app.session.catalog.photo(PhotoId(id))).map(|p| p.file_name.clone()).unwrap_or_default();
+    let a = &info["alignment"];
+    let skipped = info["skipped"].as_array().map_or(0, Vec::len);
+    let mut txt = crate::i18n::tr_format!("{} photos", used);
+    txt.push_str(&every);
+    if !reference.is_empty() {
+        txt.push_str(&format!(" · {reference}"));
+    }
+    txt.push_str(&format!(
+        " · ≤ {:.1} px, {:.2}°, ×{:.3}–{:.3}",
+        a["maxShiftPx"].as_f64().unwrap_or(0.0),
+        a["maxRotationDeg"].as_f64().unwrap_or(0.0),
+        a["scale"][0].as_f64().unwrap_or(1.0),
+        a["scale"][1].as_f64().unwrap_or(1.0)
+    ));
+    if skipped > 0 {
+        txt.push_str(&format!(" · {skipped} ✕"));
+    }
+    if let Some(w) = info["warnings"].as_array().and_then(|w| w.first()).and_then(Value::as_str) {
+        txt.push('\n');
+        txt.push_str(w);
+    }
+    txt
+}
+
+const RADIUS: lightcraft_develop::ControlSpec = lightcraft_develop::ControlSpec {
+    id: "merge.radius",
+    label: "Radius",
+    section: lightcraft_develop::Section::Light,
+    min: 1.0,
+    max: 30.0,
+    default: 8.0,
+    step: 1.0,
+    decimals: 0,
+    track: lightcraft_develop::Track::Plain,
+};
+const SMOOTHING: lightcraft_develop::ControlSpec = lightcraft_develop::ControlSpec {
+    id: "merge.smoothing",
+    label: "Smoothing",
+    section: lightcraft_develop::Section::Light,
+    min: 0.0,
+    max: 10.0,
+    default: 4.0,
+    step: 1.0,
+    decimals: 0,
+    track: lightcraft_develop::Track::Plain,
+};
+const EVERY: lightcraft_develop::ControlSpec = lightcraft_develop::ControlSpec {
+    id: "merge.every",
+    label: "Preview Every n-th Photo",
+    section: lightcraft_develop::Section::Light,
+    min: 0.0,
+    max: 20.0,
+    default: 0.0,
+    step: 1.0,
+    decimals: 0,
+    track: lightcraft_develop::Track::Plain,
+};
 
 const BOUNDARY_WARP: lightcraft_develop::ControlSpec = lightcraft_develop::ControlSpec {
     id: "merge.boundaryWarp",

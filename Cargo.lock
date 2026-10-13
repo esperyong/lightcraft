@@ -3198,6 +3198,7 @@ dependencies = [
  "lightcraft-scenes",
  "log",
  "pollster 1.0.1",
+ "rayon",
  "wgpu",
 ]
 
@@ -3232,6 +3233,7 @@ dependencies = [
  "lightcraft-scenes",
  "rayon",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -3372,6 +3374,7 @@ dependencies = [
  "lightcraft-engine",
  "lightcraft-faces",
  "lightcraft-geom",
+ "lightcraft-merge",
  "lightcraft-meta",
  "lightcraft-pipeline",
  "lightcraft-preview",

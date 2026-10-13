@@ -51,6 +51,7 @@ cargo run --release -p lightcraft-cli -- --help   # run (command chains), render
   tests without `corpus/` (`LIGHTCRAFT_CORPUS`), CJK text without `CRAFT_FONTS_DIR`, and real-model tests (`#[ignore]`d,
   e.g. `crates/engine/tests/denoise_cpu.rs`). A green run on a GPU-less Linux box hasn't exercised the GPU path.
 - **Env vars:** `LIGHTCRAFT_GPU=0` / `LIGHTCRAFT_GPU_BACKEND=off|metal|vulkan|dx12` (force CPU / pick backend),
+  `LIGHTCRAFT_GPU_SOFTWARE=1` (accept a software adapter such as Mesa's lavapipe: GPU tests then run without a GPU),
   `LIGHTCRAFT_PROFILE=1` (per-stage timings), `LIGHTCRAFT_LIBRARY` (library folder), `LIGHTCRAFT_NO_PREFS` (don't
   touch user settings), `LIGHTCRAFT_LOG`, `LIGHTCRAFT_DENOISE_MODELS`, `LIGHTCRAFT_CAMERA_PROFILES`,
   `LIGHTCRAFT_EXPORT_THREADS` (photos a batch export renders at once; 1 = one at a time),

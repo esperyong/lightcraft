@@ -666,6 +666,10 @@ pub enum Dialog {
     Merge {
         opts: crate::merge::MergeDialog,
     },
+    /// Retouching a focus stack: the strokes and brush; the preview lives in the app.
+    FocusRetouch {
+        opts: crate::focus_retouch::RetouchDialog,
+    },
     /// Settings (preferences): `tab` = general | import | performance | interface.
     Settings {
         tab: String,

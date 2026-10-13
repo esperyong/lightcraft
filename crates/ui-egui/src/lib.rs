@@ -10,6 +10,7 @@ pub mod ai_task;
 pub mod control;
 pub mod credits;
 pub mod export_task;
+pub mod focus_retouch;
 pub mod headless;
 pub mod i18n;
 pub mod icons;
@@ -237,6 +238,7 @@ pub struct LightcraftApp {
     pub(crate) region_tiles: std::collections::HashMap<(bool, u64), region::RegionView>,
     /// Photo Merge dialog previews and background merges.
     pub merge: merge::MergeState,
+    pub retouch: focus_retouch::RetouchState,
     /// An import in progress (the import review dialog's batches).
     pub import: Option<import::ImportTask>,
     /// A folder scan in progress (feeds the import review).
@@ -316,6 +318,7 @@ impl LightcraftApp {
             window_refused: None,
             region_tiles: Default::default(),
             merge: merge::MergeState::default(),
+            retouch: focus_retouch::RetouchState::default(),
             import: None,
             scan: None,
             lightroom: None,
@@ -664,6 +667,9 @@ impl LightcraftApp {
             if let (Some((t, ..)), Some(px)) = (&self.merge.preview, &self.merge.preview_pixels) {
                 tex.insert(t.id(), crate::softpaint::CpuTexture::linear(px.clone()));
             }
+            if let (Some((t, _)), Some(px)) = (&self.retouch.preview, &self.retouch.pixels) {
+                tex.insert(t.id(), crate::softpaint::CpuTexture::linear(px.clone()));
+            }
             view.paint(&tex)
         });
         self.shadow = Some(view);
@@ -743,6 +749,7 @@ impl LightcraftApp {
         }
         self.renderer.poll(ctx, &mut self.session);
         merge::poll(self, ctx);
+        focus_retouch::poll(self, ctx);
         import::poll_scan(self, ctx);
         import::tick(self, ctx);
         lightroom_import::tick(self, ctx);

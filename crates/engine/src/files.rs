@@ -362,8 +362,15 @@ fn load_bytes_now(
         raw.opcodes.list3.retain(|op| !op.is_lens_correction());
         let xy = lightcraft_raw::color::as_shot_white_xy(&raw);
         let t = lightcraft_raw::color::camera_transform(&raw, xy);
-        // the source's segmentation mattes (DNG semantic masks), read while the preview is fitted
-        let (camera_look, mattes) = rayon::join(|| crate::camera_preview::fit_preview(&raw, &bytes, &t), || dng_mattes(&bytes, &raw));
+        // the source's segmentation mattes (DNG semantic masks), read while the preview is fitted;
+        // a DNG merged from a vendor raw brings that raw's look along
+        let (camera_look, mattes) = rayon::join(
+            || {
+                let stored = (raw.format == lightcraft_raw::RawFormat::Dng).then(|| crate::camera_preview::stored_look(&bytes)).flatten();
+                stored.or_else(|| crate::camera_preview::fit_preview(&raw, &bytes, &t))
+            },
+            || dng_mattes(&bytes, &raw),
+        );
         drop(bytes);
         // Previews and thumbnails bin the mosaic straight to (about) the size they need; only
         // larger levels (exports, 1:1) demosaic the whole sensor.
@@ -490,7 +497,7 @@ fn dng_mattes(bytes: &[u8], raw: &lightcraft_raw::RawImage) -> Option<Arc<lightc
     for m in lightcraft_raw::semantic_masks(bytes) {
         let Some(kind) = matte_kind(&m.name) else { continue };
         let Some(img) = m.developed(raw.active_area, raw.crop) else { continue };
-        if kind != MatteKind::Sky && !img.data.iter().any(|&v| v >= 128) {
+        if !matches!(kind, MatteKind::Sky | MatteKind::Depth) && !img.data.iter().any(|&v| v >= 128) {
             continue;
         }
         mattes.push(kind, img.into_oriented(raw.orientation));
@@ -499,9 +506,13 @@ fn dng_mattes(bytes: &[u8], raw: &lightcraft_raw::RawImage) -> Option<Arc<lightc
 }
 
 /// What a semantic mask selects, by its `SemanticName`: Apple's (iPhone ProRAW) are named after
-/// their auxiliary image types, `urn:com:apple:photo:<year>:aux:<type>`. Other names: `None`.
+/// their auxiliary image types, `urn:com:apple:photo:<year>:aux:<type>`; a focus stack's depth map
+/// is [`lightcraft_merge::focus::DEPTH_MASK_NAME`]. Other names: `None`.
 fn matte_kind(name: &str) -> Option<lightcraft_pipeline::masks::MatteKind> {
     use lightcraft_pipeline::masks::MatteKind::*;
+    if name == lightcraft_merge::focus::DEPTH_MASK_NAME {
+        return Some(Depth);
+    }
     let kind = name.strip_prefix("urn:com:apple:photo:")?.rsplit(':').next()?;
     Some(match kind {
         "semanticskymatte" => Sky,

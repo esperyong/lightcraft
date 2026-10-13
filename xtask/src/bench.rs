@@ -1,6 +1,8 @@
 //! `cargo xtask bench [FILE] [--strict] [--threshold PCT]`: run the end-to-end render benchmark, record
 //! the results in `target/bench/history.jsonl` (one JSON object per run, with git revision and load
-//! average) and compare with the previous run.
+//! average) and compare with the previous run of the same benchmark. `--focus` runs the focus-stacking
+//! benchmark instead (`crates/engine/examples/focus_bench.rs`, Helicon Focus's terms; its `FRAMES`,
+//! `SIZE`, `METHODS` environment variables pass through).
 //!
 //! Comparisons use **process CPU time**, which reflects the work done even on a busy shared machine;
 //! wall-clock is recorded for reference. `--strict` exits non-zero when a CPU metric regressed by more
@@ -71,17 +73,24 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     let strict = args.contains(&"--strict");
     let threshold =
         args.iter().position(|a| *a == "--threshold").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<f64>().ok()).unwrap_or(20.0) / 100.0;
+    let focus = args.contains(&"--focus");
     let file = args.iter().find(|a| !a.starts_with("--") && a.parse::<f64>().is_err()).map(|s| s.to_string());
     let file = file.or_else(|| {
         let default = root.join("corpus/raw/arw-sony-a7m3-compressed.arw");
-        default.exists().then(|| default.to_string_lossy().to_string())
+        (!focus && default.exists()).then(|| default.to_string_lossy().to_string())
     });
     let mut cmd = crate::cargo();
-    cmd.args(["run", "--release", "-q", "-p", "lightcraft-engine", "--example", "render_bench", "--"]);
-    if let Some(f) = &file {
-        cmd.arg(f);
+    if focus {
+        cmd.args(["run", "--release", "-q", "-p", "lightcraft-engine", "--example", "focus_bench"]);
+        eprintln!("$ cargo run --release -p lightcraft-engine --example focus_bench");
+    } else {
+        cmd.args(["run", "--release", "-q", "-p", "lightcraft-engine", "--example", "render_bench", "--"]);
+        if let Some(f) = &file {
+            cmd.arg(f);
+        }
+        eprintln!("$ cargo run --release -p lightcraft-engine --example render_bench -- {}", file.as_deref().unwrap_or("(procedural 24 MP source)"));
     }
-    eprintln!("$ cargo run --release -p lightcraft-engine --example render_bench -- {}", file.as_deref().unwrap_or("(procedural 24 MP source)"));
+    let input = if focus { Some("focus_bench".to_string()) } else { file.clone() };
     let out = cmd.output().map_err(|e| format!("render_bench: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     print!("{text}");
@@ -95,16 +104,19 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     let dir = root.join("target/bench");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let hist = dir.join("history.jsonl");
-    let prev: Option<BTreeMap<String, f64>> = std::fs::read_to_string(&hist)
-        .ok()
-        .and_then(|s| s.lines().rev().find(|l| !l.trim().is_empty()).map(str::to_string))
-        .and_then(|l| serde_json::from_str::<serde_json::Value>(&l).ok())
-        .and_then(|v| serde_json::from_value(v["metrics"].clone()).ok());
+    // the previous run of the same benchmark (render runs and focus runs share the history)
+    let prev: Option<BTreeMap<String, f64>> = std::fs::read_to_string(&hist).ok().and_then(|s| {
+        s.lines()
+            .rev()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find(|v| (v["input"].as_str() == Some("focus_bench")) == focus)
+            .and_then(|v| serde_json::from_value(v["metrics"].clone()).ok())
+    });
     let rec = serde_json::json!({
         "rev": git_rev(root),
         "time": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         "load": load_avg(),
-        "input": file,
+        "input": input,
         "metrics": metrics,
     });
     let mut line = rec.to_string();

@@ -5,8 +5,8 @@
 //! lightcraft-cli mcp [--connect [ADDR]] [--demo] [--compact] [FILES/FOLDERS…]
 //! lightcraft-cli render <in> -o <out> [--set control=value]… [--settings FILE.json] [--preset ID] [--size N] [--quality Q]
 //! lightcraft-cli snapshot [--library DIR | --demo] [--script FILE.jsonl] [-o OUT.png] [--size WxH] [--scale S] [FILES…]
-//! lightcraft-cli merge hdr|panorama|hdr-panorama [OPTIONS] FILES…
-//! lightcraft-cli synth-merge hdr|panorama -o DIR
+//! lightcraft-cli merge hdr|panorama|hdr-panorama|focus [OPTIONS] FILES…
+//! lightcraft-cli synth-merge hdr|panorama|focus -o DIR
 //! lightcraft-cli commands [--json]
 //! lightcraft-cli controls [--json]
 //! lightcraft-cli calibrate [--max N] [--out DIR] FOLDERS/FILES…
@@ -76,15 +76,21 @@ USAGE:
         -o, --output OUT  PNG path (a final screenshot is written here if the script took none)
         --size WxH        window size in points (default 1600x1000)
         --scale S         pixels per point (default 1)
-  lightcraft-cli merge hdr|panorama|hdr-panorama [OPTIONS] FILES…
-      Photo Merge: writes <first>-HDR.dng / -Pano.dng / -HDR-Pano.dng next to the first file and
-      prints the result as JSON. Options:
+  lightcraft-cli merge hdr|panorama|hdr-panorama|focus [OPTIONS] FILES…
+      Photo Merge: writes <first>-HDR.dng / -Pano.dng / -HDR-Pano.dng / -Focus.dng next to the
+      first file (focus: the first in focus order) and prints the result as JSON. Options:
         --deghost none|low|medium|high   --no-align   --bracket N (HDR panorama)
         --projection auto|spherical|cylindrical|perspective   --boundary-warp 0..100
-        --auto-crop   --fill-edges   --no-auto-settings
+        --auto-crop   --fill-edges   --no-auto-settings   --stack
+        focus stack: --method a|b|c (average | depth map, the default | pyramid)
+          --radius 1..30 (8)   --smoothing 0..10 (4)   --order capture|selection|reverse|auto
+          --every N   --max-megapixels MP   --depth OUT.png (16-bit depth map)
+          --no-align-rotation   --no-align-scale   --no-align-brightness
         --preview OUT.png   only render a ≤ 1024 px preview (nothing written next to the files)
-  lightcraft-cli synth-merge hdr|panorama -o DIR
-      Write synthetic merge inputs (procedural scene; bracketed DNGs or overlapping PNG views).
+        --show-depth        the preview shows the focus stack's depth map
+  lightcraft-cli synth-merge hdr|panorama|focus -o DIR
+      Write synthetic merge inputs (procedural scenes; bracketed DNGs, overlapping PNG views, a
+      focus bracket of DNGs).
   lightcraft-cli commands [--json]   list every command id with its parameters
   lightcraft-cli controls [--json]   list every develop control id with its range
   lightcraft-cli calibrate [--max N] [--out DIR] FOLDERS/FILES…
@@ -350,7 +356,8 @@ fn merge(args: &[String]) -> Result<(), String> {
         Some("hdr") => "merge.hdr",
         Some("panorama" | "pano") => "merge.panorama",
         Some("hdr-panorama") => "merge.hdrPanorama",
-        _ => return Err("merge: expected hdr, panorama or hdr-panorama".into()),
+        Some("focus" | "focus-stack") => "merge.focusStack",
+        _ => return Err("merge: expected hdr, panorama, hdr-panorama or focus".into()),
     };
     let mut p = serde_json::Map::new();
     let mut files = Vec::new();
@@ -380,6 +387,40 @@ fn merge(args: &[String]) -> Result<(), String> {
             }
             "--no-auto-settings" => {
                 p.insert("autoSettings".into(), json!(false));
+            }
+            "--stack" => {
+                p.insert("stack".into(), json!(true));
+            }
+            "--method" => {
+                p.insert("method".into(), json!(take_value(args, &mut i, "--method")?));
+            }
+            "--order" => {
+                p.insert("order".into(), json!(take_value(args, &mut i, "--order")?));
+            }
+            "--depth" => {
+                p.insert("depthPath".into(), json!(take_value(args, &mut i, "--depth")?));
+            }
+            "--show-depth" => {
+                p.insert("showDepth".into(), json!(true));
+            }
+            "--no-align-rotation" => {
+                p.insert("alignRotation".into(), json!(false));
+            }
+            "--no-align-scale" => {
+                p.insert("alignScale".into(), json!(false));
+            }
+            "--no-align-brightness" => {
+                p.insert("alignBrightness".into(), json!(false));
+            }
+            flag @ ("--radius" | "--smoothing" | "--every" | "--max-megapixels") => {
+                let key = match flag {
+                    "--radius" => "radius",
+                    "--smoothing" => "smoothing",
+                    "--every" => "every",
+                    _ => "maxMegapixels",
+                };
+                let v = take_value(args, &mut i, flag)?.parse::<f64>().map_err(|e| format!("{flag}: {e}"))?;
+                p.insert(key.into(), if key == "every" { json!(v.max(0.0) as u64) } else { json!(v) });
             }
             "--preview" => {
                 p.insert("preview".into(), json!(true));
@@ -447,7 +488,14 @@ fn synth_merge(args: &[String]) -> Result<(), String> {
                 written.push(p);
             }
         }
-        _ => return Err("synth-merge: expected hdr or panorama".into()),
+        "focus" => {
+            for (k, b) in lightcraft_merge::synth::focus_bracket_dngs(1800, 1200, 12, 0).map_err(|e| e.to_string())?.into_iter().enumerate() {
+                let p = Path::new(&dir).join(format!("focus-{k:02}.dng"));
+                std::fs::write(&p, b).map_err(|e| e.to_string())?;
+                written.push(p);
+            }
+        }
+        _ => return Err("synth-merge: expected hdr, panorama or focus".into()),
     }
     for p in written {
         println!("{}", p.display());

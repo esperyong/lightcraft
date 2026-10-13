@@ -12,12 +12,75 @@ use lightcraft_raster::{
 };
 use lightcraft_raw::{RawFormat, RawImage, color::CameraTransform, profile::HsvTable};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CameraLook {
     pub matrix: Mat3,
     pub tone: CameraTone,
     /// Hue/saturation correction after `matrix`, in linear ProPhoto RGB (DNG `ProfileHueSatMap`).
     pub hue_sat: Option<HsvTable>,
+}
+
+impl CameraLook {
+    /// Whether the data is usable (bounded, invertible matrix; table shape matching its data).
+    fn valid(&self) -> bool {
+        let m = &self.matrix;
+        m.0.iter().flatten().all(|v| v.is_finite() && v.abs() < 8.0) && m.inverse().is_some() && self.hue_sat.as_ref().is_none_or(hue_sat_valid)
+    }
+}
+
+/// Whether a hue/saturation table read from a file can be applied (dimensions in range and
+/// matching the data, finite non-negative scales).
+pub(crate) fn hue_sat_valid(t: &HsvTable) -> bool {
+    let dims = (1..=4096).contains(&t.hue_divisions) && (2..=4096).contains(&t.sat_divisions) && (1..=4096).contains(&t.val_divisions);
+    let len = t.hue_divisions.checked_mul(t.sat_divisions).and_then(|n| n.checked_mul(t.val_divisions));
+    dims && len == Some(t.data.len()) && t.data.iter().flatten().all(|v| v.is_finite()) && t.data.iter().all(|e| e[1] >= 0.0 && e[2] >= 0.0)
+}
+
+/// Name of LightCraft's `DNGPrivateData`.
+const PRIVATE_NAME: &str = "LightCraft";
+/// Format version of LightCraft's `DNGPrivateData`.
+const PRIVATE_VERSION: u32 = 1;
+
+/// LightCraft's `DNGPrivateData` (JSON after the name).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Private {
+    version: u32,
+    /// The look of the raw a merged DNG was made from: the DNG's colour tags hold that raw's
+    /// white balance and fallback colour model ([`lightcraft_merge::camera_color`]), and this the
+    /// look fitted to its JPEG on top of them.
+    #[serde(rename = "cameraLook")]
+    camera_look: Option<CameraLook>,
+}
+
+/// A merged DNG's `DNGPrivateData` carrying the camera look of the raw it was made from, so it
+/// opens looking like that raw (the DNG has no camera JPEG to fit a look to).
+pub(crate) fn private_data(look: &CameraLook) -> Option<Vec<u8>> {
+    let json = serde_json::to_vec(&Private { version: PRIVATE_VERSION, camera_look: Some(look.clone()) }).ok()?;
+    let mut out = Vec::with_capacity(PRIVATE_NAME.len() + 1 + json.len());
+    out.extend_from_slice(PRIVATE_NAME.as_bytes());
+    out.push(0);
+    out.extend(json);
+    Some(out)
+}
+
+/// LightCraft's `DNGPrivateData` of a DNG, as written (to carry it into a rewritten DNG).
+pub(crate) fn private_data_of(dng: &[u8]) -> Option<Vec<u8>> {
+    let rest = lightcraft_raw::dng_private_data(dng, PRIVATE_NAME)?;
+    let mut out = PRIVATE_NAME.as_bytes().to_vec();
+    out.push(0);
+    out.extend(rest);
+    Some(out)
+}
+
+/// The camera look stored in a DNG LightCraft made ([`private_data`]); `None` when there is none,
+/// or it is damaged or from a later version.
+pub(crate) fn stored_look(dng: &[u8]) -> Option<CameraLook> {
+    let rest = lightcraft_raw::dng_private_data(dng, PRIVATE_NAME)?;
+    let p: Private = serde_json::from_slice(&rest).ok()?;
+    if p.version != PRIVATE_VERSION {
+        return None;
+    }
+    p.camera_look.filter(CameraLook::valid)
 }
 
 /// Long edge of the sensor/JPEG proxy a single photo's look is fitted on (the acceptance gates
@@ -1394,5 +1457,73 @@ mod tests {
         let swapped = fit_pairs_ordered(&sensor, &reference, None, &[ToneFit::ConditionalMedian, ToneFit::Quantile]).unwrap();
         let conditional = fit_pairs_ordered(&sensor, &reference, None, &[ToneFit::ConditionalMedian]).unwrap();
         assert_eq!(swapped.tone, conditional.tone);
+    }
+
+    fn look() -> CameraLook {
+        let tone = CameraTone::new(std::array::from_fn(|i| {
+            let x = 2f32.powf(-12.0 + 12.0 * i as f32 / 31.0);
+            [x, (1.6 * x / (x + 0.4)).min(0.99)]
+        }))
+        .unwrap();
+        let table = HsvTable { hue_divisions: 4, sat_divisions: 2, val_divisions: 1, data: vec![[2.0, 1.1, 1.0]; 8], srgb_value: false };
+        CameraLook { matrix: Mat3([[1.1, -0.05, -0.05], [-0.02, 1.04, -0.02], [0.0, -0.1, 1.1]]), tone, hue_sat: Some(table) }
+    }
+
+    fn dng_with(private_data: Option<Vec<u8>>) -> Vec<u8> {
+        let img = Rgb32f::from_fn(48, 32, |x, y| [0.2 + x as f32 / 100.0, 0.3, 0.25 + y as f32 / 100.0]);
+        let color = lightcraft_merge::FrameColor::Linear { to_xyz_d50: bradford(D65, D50).mul(&REC2020.to_xyz()) };
+        let extra = lightcraft_merge::DngExtra { masks: Vec::new(), private_data };
+        lightcraft_merge::write_linear_dng_with(
+            &img,
+            &color,
+            lightcraft_geom::Orientation::Normal,
+            &lightcraft_meta::Metadata::default(),
+            0.0,
+            lightcraft_merge::DngSamples::U16,
+            extra,
+        )
+        .unwrap()
+    }
+
+    /// A DNG merged from a vendor raw has no camera JPEG to fit a look to: the source's look
+    /// travels in its `DNGPrivateData` and is used when it is opened.
+    #[test]
+    fn a_camera_look_travels_in_dng_private_data() {
+        let look = look();
+        let data = private_data(&look).unwrap();
+        let dng = dng_with(Some(data.clone()));
+        assert_eq!(stored_look(&dng), Some(look.clone()));
+        assert_eq!(private_data_of(&dng), Some(data));
+        let (_, info) = crate::files::load_bytes(&dng, 64).unwrap();
+        assert_eq!(info.camera_tone, Some(look.tone));
+        let (_, plain) = crate::files::load_bytes(&dng_with(None), 64).unwrap();
+        assert_eq!(plain.camera_tone, None);
+    }
+
+    #[test]
+    fn a_damaged_or_hostile_stored_look_is_ignored() {
+        let mut bad_table = look();
+        if let Some(t) = bad_table.hue_sat.as_mut() {
+            t.data.truncate(3);
+        }
+        let singular = CameraLook { matrix: Mat3([[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [0.0, 0.0, 1.0]]), ..look() };
+        let huge = CameraLook { matrix: Mat3([[1e30, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]), ..look() };
+        let mut later = private_data(&look()).unwrap();
+        let at = later.iter().position(|&b| b == 0).unwrap();
+        later.splice(at + 1.., br#"{"version":2,"cameraLook":null}"#.iter().copied());
+        let datas = [
+            private_data(&bad_table).unwrap(),
+            private_data(&singular).unwrap(),
+            private_data(&huge).unwrap(),
+            later,
+            b"LightCraft\0{\"version\":1,\"cameraLook\":{\"matrix\":".to_vec(),
+            b"LightCraft\0\xff\xfe".to_vec(),
+        ];
+        for data in datas {
+            let dng = dng_with(Some(data));
+            assert_eq!(stored_look(&dng), None);
+            let (_, info) = crate::files::load_bytes(&dng, 64).unwrap();
+            assert_eq!(info.camera_tone, None);
+        }
     }
 }

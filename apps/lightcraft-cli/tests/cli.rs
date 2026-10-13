@@ -540,3 +540,31 @@ fn snapshot_leaves_desktop_gpu_preferences_untouched() {
         assert!(image.exists());
     }
 }
+
+#[test]
+fn merge_focus_stacks_a_synthetic_bracket() {
+    let dir = tmp("focus-bracket");
+    let o = Command::new(BIN).args(["synth-merge", "focus", "-o"]).arg(&dir).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let files: Vec<String> = String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect();
+    assert_eq!(files.len(), 12);
+    let depth = tmp("focus-depth.png");
+    let o = Command::new(BIN)
+        .args(["merge", "focus", "--method", "a", "--every", "3", "--radius", "6", "--no-auto-settings", "--depth"])
+        .arg(&depth)
+        .args(&files)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let r: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(r["method"], "average");
+    assert_eq!(r["used"], 5, "{r}");
+    let out = r["path"].as_str().unwrap();
+    assert!(out.ends_with("focus-00-Focus.dng"), "{out}");
+    assert!(std::path::Path::new(out).exists() && depth.exists());
+    // bad options fail cleanly
+    let o = Command::new(BIN).args(["merge", "focus", "--radius", "x"]).args(&files[..2]).output().unwrap();
+    assert!(!o.status.success());
+    let o = Command::new(BIN).args(["merge", "focus", "--method", "nope"]).args(&files[..2]).output().unwrap();
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("method"), "{}", String::from_utf8_lossy(&o.stderr));
+}

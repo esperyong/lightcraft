@@ -31,11 +31,11 @@ and prints the summary; `cargo xtask parity --write` refreshes the summary table
 | H. Crop & rotate (CROP) | 9 | 0 | 0 | 1 | 6/6 (100%) | 3/3 (100%) |
 | I. Remove / healing (REM) | 7 | 1 | 2 | 2 | 4/4 (100%) | 2/3 (67%) |
 | J. Red eye (EYE) | 2 | 0 | 0 | 0 | — | 1/1 (100%) |
-| K. Masking (MASK) | 14 | 4 | 5 | 0 | 8/8 (100%) | 5/5 (100%) |
+| K. Masking (MASK) | 14 | 5 | 4 | 0 | 8/8 (100%) | 5/5 (100%) |
 | L. Presets (PRE) | 6 | 0 | 1 | 1 | 2/2 (100%) | 2/2 (100%) |
 | M. Versions & history (VER) | 5 | 0 | 0 | 0 | 1/1 (100%) | 3/3 (100%) |
 | N. Copy / paste / sync (SYNC) | 5 | 0 | 0 | 0 | 3/3 (100%) | 1/1 (100%) |
-| O. Merge (MERGE) | 4 | 0 | 0 | 0 | — | — |
+| O. Merge (MERGE) | 8 | 0 | 0 | 0 | — | — |
 | P. Enhance (ENH) | 0 | 0 | 2 | 0 | — | — |
 | Q. HDR (HDR) | 0 | 0 | 5 | 0 | — | — |
 | R. Video (VID) | 0 | 0 | 5 | 1 | — | 0/2 (0%) |
@@ -48,9 +48,9 @@ and prints the summary; `cargo xtask parity --write` refreshes the summary table
 | Y. Menus | 82 | 0 | 4 | 8 | 47/47 (100%) | 23/23 (100%) |
 | Z. Keyboard shortcuts (desktop) | 75 | 3 | 3 | 1 | 49/52 (94%) | 23/24 (96%) |
 | Lightroom Classic extras | 32 | 11 | 39 | 9 | — | 22/24 (92%) |
-| **Total** | 394 | 39 | 83 | 36 | 193/200 (97%) | 142/152 (93%) |
+| **Total** | 398 | 40 | 82 | 36 | 193/200 (97%) | 142/152 (93%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **80.1%** of 516 in-scope rows — P0 98.2% of 200 · P1 95.7% of 152 · P2 43.3% of 163.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **80.4%** of 520 in-scope rows — P0 98.2% of 200 · P1 95.7% of 152 · P2 44.9% of 167.
 <!-- /parity:summary -->
 
 ## Top gaps
@@ -211,7 +211,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-FILT-RATING | Rating filter | P0 | ✅ | `cmd:library.filter` (`rating`, `ratingOp`), `crates/ui-egui/src/panels/filterbar.rs` | ≥ / = / ≤ stars in the filter bar (`cmd:view.filterBar`) |
 | LR-FILT-FLAG | Flag filter | P0 | ✅ | `cmd:library.filter` (`flag`), `crates/ui-egui/src/panels/filterbar.rs` | picked / rejected / unflagged (one at a time) |
 | LR-FILT-LABEL | Colour-label filter | P1 | ✅ | `cmd:library.filter` (`label`), `crates/ui-egui/src/panels/filterbar.rs` | one label at a time; no “no label” choice |
-| LR-FILT-TYPE | Type / edited filter | P1 | ✅ | `cmd:library.filter` (`kind`, `merged`, `edited`), `crates/ui-egui/src/panels/filterbar.rs`, `crates/catalog/src/query.rs` (`merged_kind`) | photos / raw / videos / HDR / panoramas / HDR panoramas (merge results by name), edited / unedited; no depth kind |
+| LR-FILT-TYPE | Type / edited filter | P1 | ✅ | `cmd:library.filter` (`kind`, `merged`, `edited`), `crates/ui-egui/src/panels/filterbar.rs`, `crates/catalog/src/query.rs` (`merged_kind`) | photos / raw / videos / HDR / panoramas / HDR panoramas / focus stacks (merge results by name), edited / unedited; no depth kind |
 | LR-FILT-KEYWORD | Keyword filter | P1 | ✅ | `cmd:library.filter` (`keyword`), `crates/ui-egui/src/panels/filterbar.rs` | keyword picker |
 | LR-FILT-CAMERA | Camera / lens filter | P1 | ✅ | `cmd:library.filter` (`camera`, `lens`), `crates/ui-egui/src/panels/filterbar.rs` | camera and lens pickers |
 | LR-FILT-LOCATION | Location filter | P2 | ✅ | `cmd:library.filter` (`text`, `ruleSet` field `location`) | free text, or a rule on location / city / state / country (smart albums, `library.filter`) |
@@ -357,7 +357,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-MASK-RADIAL | Radial gradient | P0 | ✅ | `cmd:tool.radial`, `cmd:mask.update`, `crates/ui-egui/src/panels/detail.rs` | drag the selected ellipse's body or centre pin to move; edge grips resize, outer grip rotates; rotated and compound radial components, hidden pins, outside hit rejection and one-step undo tested |
 | LR-MASK-COLORRANGE | Colour range | P1 | ✅ | `cmd:mask.add` (`colorRange`), `cmd:mask.sampleColor`, `cmd:mask.update`, `crates/pipeline/src/lib.rs` (`color_range_sample`) | Color tile → click the photo to sample (⇧-click adds, up to 5; samples taken in the space the mask compares in), Pick button, Refine slider |
 | LR-MASK-LUMRANGE | Luminance range | P1 | ✅ | `cmd:mask.add` (`luminanceRange`), `cmd:mask.update`, `crates/ui-egui/src/panels/masking.rs` (`range_controls`) | range bar with two handles (one undo step per drag), Smoothness, Show Luminance Map (B&W photo with the range tinted) |
-| LR-MASK-DEPTHRANGE | Depth range | P2 | ⬜ | | shape exists, needs depth data |
+| LR-MASK-DEPTHRANGE | Depth range | P2 | 🟡 | `cmd:mask.add` (`depthRange`), `crates/pipeline/src/masks.rs` | selects on a photo's depth map: focus stacks embed theirs in the DNG (semantic mask); no depth for other photos (no depth estimation, no iPhone depth) |
 | LR-MASK-COMBINE | Add / subtract / intersect | P0 | ✅ | `cmd:mask.addComponent` | |
 | LR-MASK-INVERT | Invert | P0 | ✅ | `cmd:mask.invert` | |
 | LR-MASK-AMOUNT | Mask amount | P1 | ✅ | `cmd:mask.adjust` (`amount`), `crates/ui-egui/src/panels/masking.rs` | |
@@ -409,7 +409,11 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-MERGE-HDR | HDR merge | P2 | ✅ | `cmd:merge.hdr`, `cmd:dialog.mergeHdr` | auto align, deghost None–High + overlay, auto settings, float DNG, Create Stack; JPEG brackets treated as linear |
 | LR-MERGE-PANO | Panorama | P2 | ✅ | `cmd:merge.panorama`, `cmd:dialog.mergePanorama` | spherical/cylindrical/perspective + auto, boundary warp, auto crop, fill edges (diffusion), DNG; no lens model / 360° wrap |
 | LR-MERGE-HDRPANO | HDR panorama | P2 | ✅ | `cmd:merge.hdrPanorama`, `cmd:dialog.mergeHdrPanorama` | brackets grouped by EXIF |
-| LR-MERGE-HEADLESS | Merge with last settings | P2 | ✅ | `cmd:merge.hdrLast`, `cmd:merge.panoramaLast`, `cmd:merge.hdrPanoramaLast` | no dialog; the options of the last merge of that kind (defaults the first time) |
+| LR-MERGE-HEADLESS | Merge with last settings | P2 | ✅ | `cmd:merge.hdrLast`, `cmd:merge.panoramaLast`, `cmd:merge.hdrPanoramaLast`, `cmd:merge.focusStackLast` | no dialog; the options of the last merge of that kind (defaults the first time) |
+| LR-MERGE-FOCUS | Focus stack (beyond Lightroom; Helicon Focus-style) | P2 | ✅ | `cmd:merge.focusStack`, `cmd:dialog.mergeFocusStack`, `crates/merge/src/focus/mod.rs` | methods A (weighted average) / B (depth map) / C (pyramid), Radius, Smoothing; streaming (memory independent of the photo count); chained Lucas–Kanade alignment (shift, rotation, magnification) + brightness; capture / selection / reverse / auto order; every n-th; 16-bit linear DNG `-Focus.dng`; live preview with A/B/C compare and depth view; CLI `merge focus`; fuse pass of A/B on the GPU when there is one (C on the CPU); on an Apple M5, B stacks at 78 % of Helicon Focus's speed (588 vs 753 MPixel/s), 60 × 33 MP ARW in ~34 s, most of it raw decoding |
+| LR-MERGE-FOCUS-DEPTH | Focus stack depth map | P2 | ✅ | `cmd:merge.focusStack` (`depthMap`, `depthPath`, `showDepth`), `crates/merge/src/focus/depth.rs` | in the DNG as a semantic mask (≤ 4096 px, 16-bit) that Depth Range masks select on; 16-bit PNG on request; depth view in the dialog; A: weighted mean frame, B: smoothed sub-frame depth, C: level-0 winners |
+| LR-MERGE-FOCUS-BATCH | Focus brackets: detect and stack each | P2 | ✅ | `cmd:merge.detectFocusBrackets`, `cmd:merge.focusStackBatch`, `cmd:merge.focusStackBrackets`, `crates/catalog/src/stacks.rs` | runs of photos ≤ 2 s apart with the same camera, lens, focal length and exposure (HDR brackets excluded); optional stacking; the app queues the brackets in the background with the last focus-stack options |
+| LR-MERGE-FOCUS-RETOUCH | Focus stack retouching | P2 | ✅ | `cmd:merge.focusRetouch`, `cmd:merge.focusProject`, `cmd:dialog.focusRetouch`, `crates/engine/src/focus_retouch.rs` | brush strokes from a frame (aligned) or method A/B/C's result over the stack; ≤ 1600 px live preview with the photo's settings, applied at full size in the background over the stack's own DNG (un-retouched copy kept, strokes editable in `<dng>.lcfocus.json`); no zoomed painting yet |
 
 ## P. Enhance (ENH)
 
@@ -605,7 +609,7 @@ visible menu bar yet: the menu model is only exposed through the control channel
 | MENU-PHOTO-FLIP | Flip horizontal / vertical | P0 | ✅ | `cmd:photo.flipHorizontal`, `cmd:photo.flipVertical` | |
 | MENU-PHOTO-CREATEVERSION | Create Version… | P1 | ✅ | `cmd:version.create` | no name prompt |
 | MENU-PHOTO-STACK | Stack submenu | P1 | ✅ | `cmd:stack.group`, `cmd:stack.ungroup`, `cmd:dialog.autoStack` | |
-| MENU-PHOTO-MERGE | Photo merge submenu | P2 | ✅ | `cmd:dialog.mergeHdr`, `cmd:dialog.mergePanorama`, `cmd:dialog.mergeHdrPanorama`, `cmd:merge.hdrLast` | |
+| MENU-PHOTO-MERGE | Photo merge submenu | P2 | ✅ | `cmd:dialog.mergeHdr`, `cmd:dialog.mergePanorama`, `cmd:dialog.mergeHdrPanorama`, `cmd:merge.hdrLast`, `cmd:dialog.mergeFocusStack` | plus Focus Stack… (not in Lightroom) |
 | MENU-PHOTO-ENHANCE | Enhance… | P2 | ⬜ | | |
 | MENU-PHOTO-AUTO | Auto settings | P0 | ✅ | `cmd:develop.auto` | |
 | MENU-PHOTO-BW | Convert to B&W | P0 | ✅ | `cmd:develop.treatment` | |
@@ -691,7 +695,7 @@ From `06-shortcuts.md` part 1. Evidence is our binding; conflicts are explained 
 | KEY-BRUSHFEATHER | Brush feather — ⇧`[` / ⇧`]` | P0 | ✅ | `cmd:brush.featherLess`, `cmd:brush.featherMore` | |
 | KEY-BRUSH | Brush — B | P0 | ✅ | `cmd:tool.brush` | |
 | KEY-HEAL | Remove / heal — H | P0 | ✅ | `cmd:panel.remove` | |
-| KEY-MERGE | HDR / panorama merges — ⌃H ⇧⌃H ⌃M ⇧⌃M | P2 | ✅ | `cmd:dialog.mergeHdr`, `cmd:dialog.mergePanorama`, `cmd:merge.hdrLast`, `cmd:merge.panoramaLast` | |
+| KEY-MERGE | HDR / panorama merges — ⌃H ⇧⌃H ⌃M ⇧⌃M | P2 | ✅ | `cmd:dialog.mergeHdr`, `cmd:dialog.mergePanorama`, `cmd:merge.hdrLast`, `cmd:merge.panoramaLast` | plus ⌃⌥F / ⇧⌃⌥F for Focus Stack (⌃F is Find off macOS) |
 | KEY-PICK | Pick — Z | P0 | 🟡 | `cmd:photo.pick` | bound to P; Z toggles zoom |
 | KEY-UNFLAG | Unflag — U | P0 | ✅ | `cmd:photo.unflag` | |
 | KEY-REJECT | Reject — X | P0 | ✅ | `cmd:photo.reject` | swaps crop aspect while cropping |

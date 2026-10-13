@@ -23,6 +23,9 @@ pub enum MatteKind {
     Hair,
     Teeth,
     Glasses,
+    /// Distance from the camera, 0 = near … 255 = far (a focus stack's depth map): what Depth
+    /// Range masks select on, never a selection by itself.
+    Depth,
 }
 
 /// Segmentation mattes that came with the source: 0..255 alpha planes, each covering the whole
@@ -49,6 +52,11 @@ impl Mattes {
 
     pub fn is_empty(&self) -> bool {
         self.mattes.is_empty()
+    }
+
+    /// Is there a matte of this kind?
+    pub fn has(&self, kind: MatteKind) -> bool {
+        self.mattes.iter().any(|(k, _)| *k == kind)
     }
 
     /// Memory held (bytes).
@@ -185,6 +193,17 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
     let fitting = mattes.map(|m| m.for_shape(shape)).unwrap_or_default();
     if !fitting.is_empty() {
         return matte_alpha(&fitting, frame, w, h);
+    }
+    if let MaskShape::DepthRange { lo, hi, feather } = shape {
+        // the photo's depth map (a focus stack's), else nothing is selected
+        let depth = mattes.map(|m| m.of(&[MatteKind::Depth])).unwrap_or_default();
+        if let Some(d) = depth.first() {
+            let mut a = matte_alpha(&[*d], frame, w, h);
+            let (lo, hi, f) = (*lo as f32, *hi as f32, (*feather as f32).max(1e-3));
+            a.data.iter_mut().for_each(|v| *v = smooth(lo - f, lo, *v) * (1.0 - smooth(hi, hi + f, *v)));
+            return a;
+        }
+        return out;
     }
     let to_long = |p: Point| frame.norm_to_long(p);
     // `img`/`log_l` are before exposure: range masks select on the exposed values.
@@ -852,6 +871,32 @@ mod tests {
             let at = |x: f64, y: f64| a.get((x * ow as f64) as usize, (y * oh as f64) as usize);
             assert!(at(0.5, 0.2) > 0.99 && at(0.5, 0.8) < 0.01, "{ow}×{oh}: {} {}", at(0.5, 0.2), at(0.5, 0.8));
         }
+    }
+
+    /// Depth Range selects on the source's depth matte (a focus stack's depth map), with a
+    /// feathered edge; without one it selects nothing, and the depth matte is no selection of its
+    /// own (Sky, Subject keep their heuristics).
+    #[test]
+    fn depth_range_selects_on_the_depth_matte() {
+        let (w, h) = (200, 100);
+        let img = Rgb32f::filled(w, h, [0.3, 0.3, 0.3]);
+        let l = img.map(crate::local::log_lum);
+        let f = frame(w, h);
+        // depth ramps left (near, 0) → right (far, 255)
+        let ramp = Image::from_fn(w / 2, h / 2, |x, _| ((x as f32 + 0.5) / (w / 2) as f32 * 255.0).round() as u8);
+        let mut mattes = Mattes::default();
+        mattes.push(MatteKind::Depth, ramp);
+        assert!(mattes.has(MatteKind::Depth) && !mattes.has(MatteKind::Sky));
+        let near = MaskShape::DepthRange { lo: 0.0, hi: 0.4, feather: 0.05 };
+        let a = shape_alpha(&near, &f, w, h, &img, &l, 0.0, Some(&mattes));
+        assert!(a.get(20, 50) > 0.99 && a.get(100, 50) < 0.01 && a.get(180, 50) < 0.01, "{} {} {}", a.get(20, 50), a.get(100, 50), a.get(180, 50));
+        // the feather: half-way through the falloff just past `hi`
+        let mid = a.get((0.425 * w as f64) as usize, 50);
+        assert!(mid > 0.1 && mid < 0.9, "{mid}");
+        let none = shape_alpha(&near, &f, w, h, &img, &l, 0.0, None);
+        assert!(none.data.iter().all(|v| *v == 0.0));
+        let sky_without = shape_alpha(&MaskShape::Sky, &f, w, h, &img, &l, 0.0, None);
+        assert_eq!(shape_alpha(&MaskShape::Sky, &f, w, h, &img, &l, 0.0, Some(&mattes)), sky_without);
     }
 
     /// Subject, Background and People use person mattes: the whole person is the union of the

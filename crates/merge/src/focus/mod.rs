@@ -24,7 +24,8 @@
 //! 4. *Gather* (method B, only when needed): colours for pixels whose smoothed depth moved away
 //!    from the frames the fuse pass kept. At half size: those are the low-confidence pixels, with
 //!    little detail of their own, and a raw is then binned instead of demosaiced (the slowest part
-//!    of decoding it).
+//!    of decoding it). On two 60-frame ARW brackets (88–91 % of the pixels gathered) full size
+//!    looked the same at 100 % and took 10–13 s more on an M5.
 //!
 //! Colours always come from the source frames (no sharpening, no tone changes); the result is
 //! scene-linear like its sources, written as a linear DNG by the caller. Our own implementation
@@ -578,10 +579,7 @@ impl FocusStacker {
             }
             Stage::Fuse => (Pass::Fuse, self.fuse_seq.iter().map(|&p| self.seq[p]).collect(), self.opts.max_edge),
             Stage::Gather => {
-                // TEMPORARY (#18, M5 round 3, to be removed before merging): `LIGHTCRAFT_FOCUS_GATHER=full`
-                // gathers from full-size frames, to compare with the half-size default on real brackets
-                let full = std::env::var("LIGHTCRAFT_FOCUS_GATHER").is_ok_and(|v| v == "full");
-                let half = self.geometry.as_ref().map(|g| g.size.0.max(g.size.1).div_ceil(2)).filter(|&e| e >= MIN_GATHER_EDGE && !full);
+                let half = self.geometry.as_ref().map(|g| g.size.0.max(g.size.1).div_ceil(2)).filter(|&e| e >= MIN_GATHER_EDGE);
                 (Pass::Gather, self.gather.iter().map(|&p| self.seq[self.fuse_seq[p]]).collect(), half.or(self.opts.max_edge))
             }
             Stage::Done => return Ok(None),

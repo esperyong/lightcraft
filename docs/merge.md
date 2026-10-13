@@ -98,8 +98,9 @@ frames (as memory allows) while the stacker works on the current ones.
 4. *Gather* (method B, only when needed): colours for the pixels whose smoothed depth left the frames
    the fuse pass kept (`info.gathered`: their share), from frames at half size. Those are the
    low-confidence pixels, with little detail of their own, and a raw at half size is binned instead of
-   demosaiced: on a 60-frame ARW bracket the full-size pass took as long as the fuse pass. Synthetic
-   bracket: B 34.76 → 34.65 dB, halo rings unchanged within 2 %.
+   demosaiced. Real brackets gather most pixels (88–91 % on two 60-frame ARW brackets); there full
+   size looked the same at 100 % and took 2.4–2.6 × as long (below). Synthetic bracket: B 34.76 →
+   34.65 dB, halo rings unchanged within 2 %.
 
 **Output:** a 16-bit linear DNG `<first photo in focus order>-Focus.dng` with the reference frame's colour
 tags (raw sources stay camera RGB, so white balance and the rest stay editable). The depth map goes
@@ -149,7 +150,7 @@ of their RGB space.
   `cargo run --release -p lightcraft-engine --example focus_bench` (or `cargo xtask bench --focus`,
   which records it in `target/bench/history.jsonl`; `SIZE=1920x1280 FRAMES=30` for a small machine).
   Every frame-sized buffer is reused from frame to frame (fresh ones cost more in page faults than
-  the arithmetic). Numbers that count are from an Apple M5 (#18); Helicon's own table: M5 753 MPixel/s
+  the arithmetic). Numbers that count are from an Apple M5 (below); Helicon's own table: M5 753 MPixel/s
   for method B.
 - Focus stack, 12 frames 640 × 420 (defocus 1.2 px per frame, a front disc as a depth step, breathing,
   drift, noise): best single frame 25.7 dB PSNR; A 32.6 dB, B 34.7 dB, C 35.2 dB; B's depth error
@@ -166,6 +167,21 @@ of their RGB space.
 - Panorama, 5 views over 182° with a 1.3× exposure drift: relative rotations < 0.1°, focal < 1 %,
   BA RMS ≈ 0.35 px; median log error vs ground truth < 0.02; no seam steps.
 
+## Measured on an Apple M5 (#18)
+
+- `focus_bench`, MPixel/s end to end / stacking only: B on the GPU 369 / 588 (Helicon Focus: 753 for
+  method B, so 78 %), B on the CPU 224 / 291, A on the GPU 339 / 478, A on the CPU 189 / 225, C 138 / 156.
+- Two brackets of 60 ARW frames, 7008 × 4672 (Sony A7C II, 100 mm macro, a figurine; focus steps 4 and
+  1), from the raw files: B 33.0–34.5 s (align 3.8–4.0 s, fuse 19.3–20.9 s on the GPU, gather
+  8.0–8.2 s for 88–91 % of the pixels), 8.5–9.7 GB peak; C 34.9 s; A 24.4 s. Decoding the raws takes
+  most of the fuse pass (the same work in memory, 100 frames of 21 MP, takes 3.6 s).
+- Gathering at full size instead: 19.6–20.8 s, the whole stack 44.8–46.1 s, +1.7 GB. Rendered at
+  100 %, face grain, petal texture and edges looked the same as with half-size frames; the 8-bit
+  renders differ by 2.4 on average, as much in the flat background as in the petals.
+- The figurine's smooth plastic face comes out as sharp as in its sharpest frame, without seams, in
+  B and C alike (B was soft with worm-like seams before the edge-aware fill). What no frame has
+  sharp stays soft: the step-4 bracket missed the flowers, the step-1 bracket has them.
+
 ## Limits (known gaps)
 
 - No lens-distortion model in the panorama bundle adjustment (rectilinear lenses assumed); no
@@ -177,6 +193,7 @@ of their RGB space.
   caption also lists them.
 - Panorama output is limited to `maxMegapixels` (default 40) — blending memory is ~25 bytes/pixel.
 - The browser build has no file access for merges yet.
-- Focus stack: method C, the depth refinement and the gather pass run on the CPU; its speed against
-  Helicon Focus has to be measured on a Mac (`#18`). Retouching paints on a ≤ 1600 px view of the whole
-  picture (no zoom); a retouched stack's depth map is the merged one.
+- Focus stack: method C, the depth refinement and the gather pass run on the CPU, and raws are
+  demosaiced on the CPU, which bounds a stack from raw files more than the stacking does. Retouching
+  paints on a ≤ 1600 px view of the whole picture (no zoom); a retouched stack's depth map is the
+  merged one.

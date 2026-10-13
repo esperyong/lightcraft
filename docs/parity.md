@@ -31,11 +31,11 @@ and prints the summary; `cargo xtask parity --write` refreshes the summary table
 | H. Crop & rotate (CROP) | 9 | 0 | 0 | 1 | 6/6 (100%) | 3/3 (100%) |
 | I. Remove / healing (REM) | 7 | 1 | 2 | 2 | 4/4 (100%) | 2/3 (67%) |
 | J. Red eye (EYE) | 2 | 0 | 0 | 0 | — | 1/1 (100%) |
-| K. Masking (MASK) | 14 | 4 | 5 | 0 | 8/8 (100%) | 5/5 (100%) |
+| K. Masking (MASK) | 14 | 5 | 4 | 0 | 8/8 (100%) | 5/5 (100%) |
 | L. Presets (PRE) | 6 | 0 | 1 | 1 | 2/2 (100%) | 2/2 (100%) |
 | M. Versions & history (VER) | 5 | 0 | 0 | 0 | 1/1 (100%) | 3/3 (100%) |
 | N. Copy / paste / sync (SYNC) | 5 | 0 | 0 | 0 | 3/3 (100%) | 1/1 (100%) |
-| O. Merge (MERGE) | 4 | 0 | 0 | 0 | — | — |
+| O. Merge (MERGE) | 8 | 0 | 0 | 0 | — | — |
 | P. Enhance (ENH) | 0 | 0 | 2 | 0 | — | — |
 | Q. HDR (HDR) | 0 | 0 | 5 | 0 | — | — |
 | R. Video (VID) | 0 | 0 | 5 | 1 | — | 0/2 (0%) |
@@ -48,9 +48,9 @@ and prints the summary; `cargo xtask parity --write` refreshes the summary table
 | Y. Menus | 82 | 0 | 4 | 8 | 47/47 (100%) | 23/23 (100%) |
 | Z. Keyboard shortcuts (desktop) | 75 | 3 | 3 | 1 | 49/52 (94%) | 23/24 (96%) |
 | Lightroom Classic extras | 32 | 11 | 39 | 9 | — | 22/24 (92%) |
-| **Total** | 394 | 39 | 83 | 36 | 193/200 (97%) | 142/152 (93%) |
+| **Total** | 398 | 40 | 82 | 36 | 193/200 (97%) | 142/152 (93%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **80.1%** of 516 in-scope rows — P0 98.2% of 200 · P1 95.7% of 152 · P2 43.3% of 163.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **80.4%** of 520 in-scope rows — P0 98.2% of 200 · P1 95.7% of 152 · P2 44.9% of 167.
 <!-- /parity:summary -->
 
 ## Top gaps
@@ -410,7 +410,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-MERGE-PANO | Panorama | P2 | ✅ | `cmd:merge.panorama`, `cmd:dialog.mergePanorama` | spherical/cylindrical/perspective + auto, boundary warp, auto crop, fill edges (diffusion), DNG; no lens model / 360° wrap |
 | LR-MERGE-HDRPANO | HDR panorama | P2 | ✅ | `cmd:merge.hdrPanorama`, `cmd:dialog.mergeHdrPanorama` | brackets grouped by EXIF |
 | LR-MERGE-HEADLESS | Merge with last settings | P2 | ✅ | `cmd:merge.hdrLast`, `cmd:merge.panoramaLast`, `cmd:merge.hdrPanoramaLast`, `cmd:merge.focusStackLast` | no dialog; the options of the last merge of that kind (defaults the first time) |
-| LR-MERGE-FOCUS | Focus stack (beyond Lightroom; Helicon Focus-style) | P2 | ✅ | `cmd:merge.focusStack`, `cmd:dialog.mergeFocusStack`, `crates/merge/src/focus/mod.rs` | methods A (weighted average) / B (depth map) / C (pyramid), Radius, Smoothing; streaming (memory independent of the photo count); chained Lucas–Kanade alignment (shift, rotation, magnification) + brightness; capture / selection / reverse / auto order; every n-th; 16-bit linear DNG `-Focus.dng`; live preview with A/B/C compare and depth view; CLI `merge focus`; fuse pass of A/B on the GPU when there is one (C on the CPU); speed against Helicon unmeasured on a Mac yet (#18) |
+| LR-MERGE-FOCUS | Focus stack (beyond Lightroom; Helicon Focus-style) | P2 | ✅ | `cmd:merge.focusStack`, `cmd:dialog.mergeFocusStack`, `crates/merge/src/focus/mod.rs` | methods A (weighted average) / B (depth map) / C (pyramid), Radius, Smoothing; streaming (memory independent of the photo count); chained Lucas–Kanade alignment (shift, rotation, magnification) + brightness; capture / selection / reverse / auto order; every n-th; 16-bit linear DNG `-Focus.dng`; live preview with A/B/C compare and depth view; CLI `merge focus`; fuse pass of A/B on the GPU when there is one (C on the CPU); on an Apple M5, B stacks at 78 % of Helicon Focus's speed (588 vs 753 MPixel/s), 60 × 33 MP ARW in ~34 s, most of it raw decoding |
 | LR-MERGE-FOCUS-DEPTH | Focus stack depth map | P2 | ✅ | `cmd:merge.focusStack` (`depthMap`, `depthPath`, `showDepth`), `crates/merge/src/focus/depth.rs` | in the DNG as a semantic mask (≤ 4096 px, 16-bit) that Depth Range masks select on; 16-bit PNG on request; depth view in the dialog; A: weighted mean frame, B: smoothed sub-frame depth, C: level-0 winners |
 | LR-MERGE-FOCUS-BATCH | Focus brackets: detect and stack each | P2 | ✅ | `cmd:merge.detectFocusBrackets`, `cmd:merge.focusStackBatch`, `cmd:merge.focusStackBrackets`, `crates/catalog/src/stacks.rs` | runs of photos ≤ 2 s apart with the same camera, lens, focal length and exposure (HDR brackets excluded); optional stacking; the app queues the brackets in the background with the last focus-stack options |
 | LR-MERGE-FOCUS-RETOUCH | Focus stack retouching | P2 | ✅ | `cmd:merge.focusRetouch`, `cmd:merge.focusProject`, `cmd:dialog.focusRetouch`, `crates/engine/src/focus_retouch.rs` | brush strokes from a frame (aligned) or method A/B/C's result over the stack; ≤ 1600 px live preview with the photo's settings, applied at full size in the background over the stack's own DNG (un-retouched copy kept, strokes editable in `<dng>.lcfocus.json`); no zoomed painting yet |

@@ -327,6 +327,76 @@ fn a_merge_takes_the_settings_of_its_edited_sources() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Issue #24: lens corrections embedded in the sources carry into an HDR (same geometry) and a
+/// focus stack (cut to the area all frames cover; also after retouching), not into a panorama.
+#[test]
+fn lens_corrections_carry_into_hdr_and_focus_results() {
+    use lightcraft_catalog::PhotoId;
+    use lightcraft_geom::Point;
+    use lightcraft_pipeline::optics::{crop_lens, embedded_vignette_gain, embedded_warp};
+    let ops = vec![
+        lightcraft_raw::Opcode::WarpRectilinear { planes: vec![[1.0, 0.02, -0.004, 0.0, 0.0005, -0.0008]], center: [0.48, 0.51] },
+        lightcraft_raw::Opcode::FixVignetteRadial { k: [0.35, -0.08, 0.0, 0.0, 0.0], center: [0.48, 0.51] },
+    ];
+    let with_lens = |dng: Vec<u8>| {
+        let mut raw = lightcraft_raw::decode(&dng).unwrap();
+        raw.opcodes.list3 = ops.clone();
+        lightcraft_raw::write_dng(&raw, &Default::default()).unwrap()
+    };
+    let lens_of = |path: &str| crate::files::embedded_lens(&lightcraft_raw::probe_info(&std::fs::read(path).unwrap()).unwrap()).unwrap();
+    let same = |a: &lightcraft_develop::EmbeddedLens, b: &lightcraft_develop::EmbeddedLens, w: f64, h: f64| {
+        for p in [Point::new(3.0, 4.0), Point::new(w / 2.0, h / 3.0), Point::new(w - 2.0, h - 3.0)] {
+            let (pa, pb) = (embedded_warp(&a.warp.unwrap(), p, 0, w, h), embedded_warp(&b.warp.unwrap(), p, 0, w, h));
+            assert!(pa.dist(pb) < 1e-6, "{pa:?} vs {pb:?}");
+            let (ga, gb) = (embedded_vignette_gain(&a.vignette.unwrap(), p, w, h), embedded_vignette_gain(&b.vignette.unwrap(), p, w, h));
+            assert!((ga - gb).abs() < 1e-9, "{ga} vs {gb}");
+        }
+    };
+    let dir = temp_dir("lens");
+    let write = |name: String, b: Vec<u8>| {
+        let p = dir.join(name);
+        std::fs::write(&p, with_lens(b)).unwrap();
+        p.to_string_lossy().to_string()
+    };
+    let hdr: Vec<String> = lightcraft_merge::synth::bracket_dngs(240, 160, &[-1.0, 0.0, 1.0])
+        .unwrap()
+        .into_iter()
+        .enumerate()
+        .map(|(i, b)| write(format!("H{i}.dng"), b))
+        .collect();
+    let focus: Vec<String> = lightcraft_merge::synth::focus_bracket_dngs(240, 160, 4, 60)
+        .unwrap()
+        .into_iter()
+        .enumerate()
+        .map(|(i, b)| write(format!("F{i}.dng"), b))
+        .collect();
+    let mut s = Session::new().with_fs();
+    let src = lens_of(&hdr[0]);
+    let hdr_ids = import(&mut s, hdr.clone());
+    let focus_ids = import(&mut s, focus.clone());
+    // HDR: the reference frame's geometry, its lens model as it was
+    let r = s.execute("merge.hdr", &json!({"ids": hdr_ids, "autoSettings": false})).unwrap();
+    let res = PhotoId(r["id"].as_u64().unwrap());
+    same(&src, &lens_of(r["path"].as_str().unwrap()), 240.0, 160.0);
+    assert!(s.catalog.photo(res).unwrap().embedded_lens.is_some());
+    assert!(s.develop_of(res).unwrap().optics.lens_profile, "Lens Corrections on, as for the sources");
+    // focus stack: the model moved with the cut
+    let r = s.execute("merge.focusStack", &json!({"ids": focus_ids, "method": "a", "autoSettings": false})).unwrap();
+    let (c, fs) = (&r["crop"], &r["frameSize"]);
+    let (fw, fh) = (fs[0].as_f64().unwrap(), fs[1].as_f64().unwrap());
+    let cut = [c[0].as_f64().unwrap() / fw, c[1].as_f64().unwrap() / fh, c[2].as_f64().unwrap() / fw, c[3].as_f64().unwrap() / fh];
+    let (w, h) = (c[2].as_f64().unwrap(), c[3].as_f64().unwrap());
+    assert!(w < fw && h < fh, "a cut: {r}");
+    let path = r["path"].as_str().unwrap().to_string();
+    let want = crop_lens(&lens_of(&focus[1]), cut, fw, fh);
+    same(&want, &lens_of(&path), w, h);
+    // retouched: still there
+    let id = PhotoId(r["id"].as_u64().unwrap());
+    s.execute("merge.focusRetouch", &json!({"id": id.0, "strokes": [{"source": 0, "points": [[0.5, 0.5]], "size": 0.1}]})).unwrap();
+    same(&want, &lens_of(&path), w, h);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_focus_stack_is_retouched_from_a_frame_and_back() {
     let dir = temp_dir("focus-retouch");

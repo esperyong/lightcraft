@@ -190,6 +190,8 @@ impl MergeJob {
         let sub = |a: f32, b: f32| move |f: f32, s: &str| progress(a + (b - a) * f, s);
         let mut depth = None;
         let mut focus_project = None;
+        // a focus stack's cut of its reference frame: (x, y, w, h) normalised, the frame's size
+        let mut focus_cut = None;
         // `look`: the source whose colours the result keeps (its camera look goes with the DNG)
         let (image, color, orientation, metadata, baseline, samples, crop, mut info, ghost, look) = match &self.kind {
             MergeKind::FocusStack { focus, .. } => {
@@ -201,6 +203,9 @@ impl MergeJob {
                     focus_project = Some(crate::focus_retouch::FocusProject::of(&r, &self.sources, focus));
                 }
                 depth = Some(r.depth);
+                let (fw, fh) = (r.frame_size.0.max(1) as f64, r.frame_size.1.max(1) as f64);
+                let c = r.crop;
+                focus_cut = Some(([c.x as f64 / fw, c.y as f64 / fh, c.w as f64 / fw, c.h as f64 / fh], fw, fh));
                 let look = r.reference;
                 (r.image, r.color, r.orientation, r.metadata, r.baseline_exposure, lightcraft_merge::DngSamples::U16, None, info, None, look)
             }
@@ -308,11 +313,14 @@ impl MergeJob {
             (MergeKind::FocusStack { depth_map: true, .. }, Some(d)) => lightcraft_merge::focus::depth_mask(d).into_iter().collect(),
             _ => Vec::new(),
         };
-        let private_data = match &color {
-            lightcraft_merge::FrameColor::Camera(_) => self.camera_look(look),
-            lightcraft_merge::FrameColor::Linear { .. } => None,
+        // the reference photo's camera look and lens corrections go with the DNG
+        let reference = self.sources.get(look).and_then(|(_, p)| (self.read)(p).ok()).filter(|b| lightcraft_raw::probe(b).is_some());
+        let private_data = match (&color, &reference) {
+            (lightcraft_merge::FrameColor::Camera(_), Some(bytes)) => camera_look(bytes),
+            _ => None,
         };
-        let extra = lightcraft_merge::DngExtra { masks, private_data, unique_id: Some(self.unique_id) };
+        let lens_opcodes = reference.as_deref().map(|b| self.lens_opcodes(b, focus_cut, (image.width, image.height))).unwrap_or_default();
+        let extra = lightcraft_merge::DngExtra { masks, private_data, unique_id: Some(self.unique_id), lens_opcodes };
         let dng = lightcraft_merge::write_linear_dng_with(&image, &color, orientation, &metadata, baseline, samples, extra).map_err(err)?;
         info["width"] = json!(image.width);
         info["height"] = json!(image.height);
@@ -354,19 +362,19 @@ impl MergeJob {
         self.sources.get(reference).and_then(|(id, _)| edited(*id)).or_else(|| self.sources.iter().find_map(|(id, _)| edited(*id)))
     }
 
-    /// The camera look of source `index` when it is a raw without a colour matrix (fitted to its
-    /// own JPEG, as when the photo is opened), as a merged DNG's private data: the merge then
-    /// opens looking like that photo.
-    fn camera_look(&self, index: usize) -> Option<Vec<u8>> {
-        let (_, path) = self.sources.get(index)?;
-        let bytes = (self.read)(path).ok()?;
-        lightcraft_raw::probe(&bytes)?;
-        let mut raw = lightcraft_raw::decode(&bytes).ok()?;
-        // as when the photo is opened: the look's sensor proxy is binned without lens corrections
-        raw.opcodes.list3.retain(|op| !op.is_lens_correction());
-        let t = lightcraft_raw::color::camera_transform(&raw, lightcraft_raw::color::as_shot_white_xy(&raw));
-        let look = crate::camera_preview::fit_preview(&raw, &bytes, &t)?;
-        crate::camera_preview::private_data(&look)
+    /// The reference raw's lens corrections (`bytes`) as opcodes for the merged `size` image: an HDR
+    /// keeps the reference frame's geometry (as stored, unoriented), a focus stack is a cut
+    /// (`focus_cut`) of the oriented frame. A panorama's picture is a projection: none.
+    fn lens_opcodes(&self, bytes: &[u8], focus_cut: Option<([f64; 4], f64, f64)>, size: (usize, usize)) -> Vec<lightcraft_raw::Opcode> {
+        let Ok(info) = lightcraft_raw::probe_info(bytes) else { return Vec::new() };
+        let lens = match (&self.kind, focus_cut) {
+            (MergeKind::Hdr { .. }, _) => crate::files::embedded_lens_frame(&info).map(|(l, _, _)| l),
+            (MergeKind::FocusStack { .. }, Some((cut, w, h))) => {
+                crate::files::embedded_lens(&info).map(|l| lightcraft_pipeline::optics::crop_lens(&l, cut, w, h))
+            }
+            _ => None,
+        };
+        lens.map(|l| crate::files::lens_opcodes(&l, size.0, size.1)).unwrap_or_default()
     }
 
     /// Frames decoded at once (and held while the stacker works on the previous ones): as many as
@@ -597,6 +605,17 @@ pub fn detect_bracket(frames: &[Frame]) -> Option<usize> {
     let ev: Vec<f64> = frames.iter().map(|f| f.exposure).collect::<Option<_>>()?;
     let n = ev.len();
     (2..=n / 2).find(|&b| n.is_multiple_of(b) && (0..n).all(|k| (ev[k] - ev[k % b]).abs() < 0.2) && (1..b).any(|k| (ev[k] - ev[0]).abs() > 0.5))
+}
+
+/// The camera look of a raw without a colour matrix (fitted to its own JPEG, as when the photo is
+/// opened), as a merged DNG's private data: the merge then opens looking like that photo.
+fn camera_look(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut raw = lightcraft_raw::decode(bytes).ok()?;
+    // as when the photo is opened: the look's sensor proxy is binned without lens corrections
+    raw.opcodes.list3.retain(|op| !op.is_lens_correction());
+    let t = lightcraft_raw::color::camera_transform(&raw, lightcraft_raw::color::as_shot_white_xy(&raw));
+    let look = crate::camera_preview::fit_preview(&raw, bytes, &t)?;
+    crate::camera_preview::private_data(&look)
 }
 
 /// Render a merged DNG like the library will show it (default raw settings with the sources' look

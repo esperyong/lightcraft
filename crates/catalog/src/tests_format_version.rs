@@ -73,6 +73,28 @@ fn v3_library_loads_and_is_upgraded() {
     assert_eq!(snapshot_version(&m), u64::from(VERSION));
 }
 
+/// A library saved before focus-bracket stacks opens as it was (its stacks plain) and is rewritten in this format.
+#[test]
+fn v4_library_loads_and_is_upgraded() {
+    let (mut base, log, mut full) = legacy_parts();
+    let ids: Vec<PhotoId> = base.photos().map(|p| p.id).collect();
+    for c in [&mut base, &mut full] {
+        let id = c.alloc_stack_id();
+        c.apply(Op::AddStack { stack: Stack { id, photos: ids.clone(), collapsed: true, kind: StackKind::Plain } }).unwrap();
+    }
+    let snap = base.to_snapshot();
+    let stack = serde_json::to_value(base.stacks().next().unwrap()).unwrap();
+    assert!(stack.get("kind").is_none(), "a plain stack is written as before: {stack}");
+    let m = MemStore::new();
+    m.set(SNAPSHOT, format!("{{\"format\":\"lightcraft-catalog\",\"version\":4,\"seq\":2,\"catalog\":{snap}}}\n").into_bytes());
+    m.set(LOG, log.into_bytes());
+    let (_, c, r) = Journal::open(Box::new(m.clone())).unwrap();
+    assert_eq!(c.to_snapshot(), full.to_snapshot());
+    assert_eq!(c.stacks().next().map(|s| s.kind), Some(StackKind::Plain));
+    assert_eq!((r.replayed, r.upgraded_from), (1, Some(4)));
+    assert_eq!(snapshot_version(&m), u64::from(VERSION));
+}
+
 #[test]
 fn versionless_log_only_library_is_upgraded() {
     let mut c = Catalog::new();
@@ -207,8 +229,9 @@ fn op_variants_are_versioned() {
             Op::SetBrowsed { .. } => 2,
             Op::SetAlbumOrder { .. } => 3,
             Op::SetAi { .. } => 4,
+            Op::SetStackKind { .. } => 5,
         }
     }
-    let newest = since(&Op::SetAi { id: PhotoId(0), ai: None });
+    let newest = since(&Op::SetStackKind { id: StackId(0), kind: StackKind::FocusBracket });
     assert_eq!(newest, VERSION, "the newest op's version must be the current format version");
 }

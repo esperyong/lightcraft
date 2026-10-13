@@ -300,6 +300,7 @@ impl Op {
             | Op::SetAlbumOrder { .. }
             | Op::SetAlbumRules { .. }
             | Op::RemoveStack { .. }
+            | Op::SetStackKind { .. }
             | Op::SetLabelName { .. }
             | Op::SetBrowsed { .. } => {}
         }

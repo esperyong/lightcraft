@@ -56,6 +56,7 @@ pub mod rename;
 pub mod segment;
 pub mod sidecar;
 pub mod smart;
+pub mod stack_scope;
 pub mod subject;
 mod view;
 pub mod walk;

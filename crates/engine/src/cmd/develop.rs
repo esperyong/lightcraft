@@ -6,6 +6,7 @@ use lightcraft_geom::{CropGeometry, CropHandle, Point, Rect, crop_fit_angle, dra
 use serde_json::{Value, json};
 
 use super::{CommandSpec, always, bad, bool_or, cmd, f64_or, f64_req, has_active, has_clipboard, has_selection, ok, str_param};
+use crate::stack_scope::Members;
 use crate::{Result, Session, media::SourceLevel};
 
 fn active(s: &Session, c: &str) -> Result<PhotoId> {
@@ -663,7 +664,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     s.previous_active.filter(|id| s.catalog.photo(*id).is_some_and(|ph| !ph.deleted)).ok_or_else(|| bad(c, "no previous photo"))?;
                 let groups = groups_param(p).unwrap_or_else(|| s.copy_groups.clone());
                 let partial = lightcraft_develop::extract_groups(&s.develop_of(prev).unwrap_or_default(), &groups);
-                let ids: Vec<PhotoId> = s.targets(p).into_iter().filter(|id| *id != prev).collect();
+                let ids: Vec<PhotoId> = s.stack_targets(p, Members::All).ids.into_iter().filter(|id| *id != prev).collect();
                 let ops = ids
                     .iter()
                     .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
@@ -679,7 +680,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paste Edit Settings",
             ["Edit"],
             Some("Cmd+V"),
-            "{ids?, groups?: [settingsGroup] (paste only these of the copied groups)}",
+            "{ids?, groups?: [settingsGroup] (paste only these of the copied groups), expandStacks?} — with no ids, to the selection, a collapsed stack standing for all its photos",
             has_clipboard,
             |s, p| {
                 let mut clip = s.clipboard.clone().unwrap_or_default();
@@ -689,7 +690,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     let full = lightcraft_develop::apply_partial(&DevelopSettings::default(), &clip, 1.0);
                     clip = lightcraft_develop::extract_groups(&full, &only);
                 }
-                let ids = s.targets(p);
+                let ids = s.stack_targets(p, Members::All).ids;
                 let ops = ids
                     .iter()
                     .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
@@ -705,17 +706,17 @@ pub fn specs() -> Vec<CommandSpec> {
             "Sync Settings",
             [],
             None,
-            "{groups?} — copy the active photo's settings to all selected photos",
+            "{groups?} — copy the active photo's settings to all selected photos (a collapsed stack: all its photos)",
             has_selection,
             |s, p| {
                 let id = active(s, "develop.sync")?;
                 let groups = groups_param(p).unwrap_or_else(SettingsGroup::default_copy);
                 let d = s.develop_of(id).unwrap_or_default();
                 let partial = lightcraft_develop::extract_groups(&d, &groups);
+                // a collapsed stack selected stands for its photos (e.g. a focus bracket)
                 let ops = s
-                    .selection
+                    .expand_stacks(&s.selection.ids, Members::All)
                     .ids
-                    .clone()
                     .into_iter()
                     .filter(|x| *x != id)
                     .filter_map(|x| s.develop_of(x).map(|d| (x, d)))
@@ -740,7 +741,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 let delta = f64_req(p, "delta", c)?;
                 let label = format!("Quick Develop: {}", spec.label);
                 let ops: Vec<Op> = s
-                    .targets(p)
+                    .stack_targets(p, Members::All)
+                    .ids
                     .into_iter()
                     .filter_map(|id| s.develop_of(id).map(|d| (id, d)))
                     .filter_map(|(id, d)| {
@@ -810,7 +812,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Auto Sync",
             ["Edit"],
             Some("Cmd+Alt+Shift+A"),
-            "{on?: bool} (toggles when omitted) — edits to the active photo also change the other selected photos (only the settings that changed; not spot removal / red eye) → {on}",
+            "{on?: bool} (toggles when omitted) — edits to the active photo also change the other selected photos (a collapsed stack: all its photos; only the settings that changed; not spot removal / red eye) → {on}",
             always,
             |s, p| {
                 s.auto_sync = p.get("on").and_then(Value::as_bool).unwrap_or(!s.auto_sync);
@@ -818,19 +820,27 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         // ---- presets
-        cmd!("preset.apply", "Apply Preset", [], None, "{id: presetId, amount?: 0..200 (percent), ids?}", has_selection, |s, p| {
-            let pid = str_param(p, "id").ok_or_else(|| bad("preset.apply", "missing id"))?;
-            let preset = s.presets.iter().find(|x| x.id == pid).cloned().ok_or_else(|| bad("preset.apply", format!("unknown preset `{pid}`")))?;
-            let amount = f64_or(p, "amount", 100.0).clamp(0.0, 200.0) / 100.0;
-            let ids = s.targets(p);
-            let ops = ids
-                .iter()
-                .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                .filter_map(|(id, d)| s.develop_op(id, preset.apply(&d, amount), &format!("Preset: {}", preset.name)))
-                .collect::<Vec<_>>();
-            s.commit(&format!("Preset: {}", preset.name), Op::Batch { ops })?;
-            ok()
-        }),
+        cmd!(
+            "preset.apply",
+            "Apply Preset",
+            [],
+            None,
+            "{id: presetId, amount?: 0..200 (percent), ids? (default: the selection, a collapsed stack standing for all its photos), expandStacks?}",
+            has_selection,
+            |s, p| {
+                let pid = str_param(p, "id").ok_or_else(|| bad("preset.apply", "missing id"))?;
+                let preset = s.presets.iter().find(|x| x.id == pid).cloned().ok_or_else(|| bad("preset.apply", format!("unknown preset `{pid}`")))?;
+                let amount = f64_or(p, "amount", 100.0).clamp(0.0, 200.0) / 100.0;
+                let ids = s.stack_targets(p, Members::All).ids;
+                let ops = ids
+                    .iter()
+                    .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
+                    .filter_map(|(id, d)| s.develop_op(id, preset.apply(&d, amount), &format!("Preset: {}", preset.name)))
+                    .collect::<Vec<_>>();
+                s.commit(&format!("Preset: {}", preset.name), Op::Batch { ops })?;
+                ok()
+            }
+        ),
         cmd!("preset.create", "Create Preset", ["Photo"], None, "{name, group?, groups?: [settingsGroup]}", has_active, |s, p| {
             let id = active(s, "preset.create")?;
             let name = str_param(p, "name").ok_or_else(|| bad("preset.create", "missing name"))?;

@@ -305,3 +305,50 @@ fn a_collapsed_stack_stands_for_its_members() {
     assert_eq!(s.stack_targets(&json!({}), Members::All).ids, vec![c]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Issue #24: settings reach every photo of a selected collapsed stack (Sync, Paste, presets,
+/// Quick Develop, Auto Sync); ratings stay with the photo the grid shows.
+#[test]
+fn develop_commands_reach_a_collapsed_stack_whole() {
+    let dir = temp_dir("stack-develop");
+    let mut s = open(&dir);
+    let vis = s.visible_cloned();
+    let (a, b, c, d) = (vis[2], vis[3], vis[4], vis[5]);
+    s.execute("library.select", &json!({"ids": [a.0, b.0, c.0], "active": b.0})).unwrap();
+    s.execute("stack.group", &json!({})).unwrap();
+    let exposure = |s: &Session, id| s.develop_of(id).unwrap().light.exposure;
+    // Sync: one cell selected, the stack's photos take the top's settings
+    s.execute("library.select", &json!({"ids": [b.0]})).unwrap();
+    let a0 = exposure(&s, a);
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.5})).unwrap();
+    assert_eq!(exposure(&s, a), a0, "Auto Sync is off: unchanged before Sync");
+    let r = s.execute("develop.sync", &json!({})).unwrap();
+    assert_eq!(r["changed"], 2);
+    assert_eq!([exposure(&s, a), exposure(&s, c)], [0.5, 0.5]);
+    // Paste
+    s.execute("library.select", &json!({"ids": [d.0]})).unwrap();
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": 1.0})).unwrap();
+    s.execute("develop.copy", &json!({})).unwrap();
+    s.execute("library.select", &json!({"ids": [b.0]})).unwrap();
+    s.execute("develop.paste", &json!({})).unwrap();
+    assert_eq!([exposure(&s, a), exposure(&s, b), exposure(&s, c)], [1.0; 3]);
+    // Quick Develop and presets
+    s.execute("develop.quickAdjust", &json!({"control": "light.exposure", "delta": 0.25})).unwrap();
+    assert_eq!([exposure(&s, a), exposure(&s, b), exposure(&s, c)], [1.25; 3]);
+    let preset = s.presets.first().map(|p| p.id.clone()).unwrap();
+    s.execute("preset.apply", &json!({"id": preset})).unwrap();
+    for id in [a, b, c] {
+        assert!(s.catalog.photo(id).unwrap().history.last().is_some_and(|h| h.label.starts_with("Preset:")), "{id:?}");
+    }
+    // Auto Sync
+    s.execute("develop.autoSync", &json!({"on": true})).unwrap();
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": 2.0})).unwrap();
+    assert_eq!([exposure(&s, a), exposure(&s, c)], [2.0, 2.0]);
+    s.execute("develop.autoSync", &json!({"on": false})).unwrap();
+    // a rating is the shown photo's alone
+    let rating = |s: &Session, id| s.catalog.photo(id).unwrap().rating;
+    let before = [rating(&s, a), rating(&s, c)];
+    s.execute("photo.rate", &json!({"rating": 3})).unwrap();
+    assert_eq!((rating(&s, b), [rating(&s, a), rating(&s, c)]), (3, before));
+    let _ = std::fs::remove_dir_all(&dir);
+}

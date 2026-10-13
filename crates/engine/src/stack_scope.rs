@@ -13,6 +13,12 @@ use serde_json::Value;
 
 use crate::{LibrarySource, Selection, Session};
 
+/// Photos named by the parameters (an `ids` array or a numeric `id`, as [`Session::targets`] reads
+/// them; a preset's `id` is no photo).
+pub fn explicit_ids(p: &Value) -> bool {
+    p.get("ids").and_then(Value::as_array).is_some() || p.get("id").and_then(Value::as_u64).is_some()
+}
+
 /// Which members of a collapsed stack a command works on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Members {
@@ -65,12 +71,17 @@ impl Session {
         if self.source == LibrarySource::RecentlyDeleted || self.catalog.stacks().next().is_none() {
             return StackScope::literal(ids.to_vec());
         }
-        let index = self.catalog.stack_index();
+        // a few photos (the usual selection, asked every frame by the panels): look each up
+        let index = (ids.len() > 8).then(|| self.catalog.stack_index());
+        let stack_of = |id: &PhotoId| match &index {
+            Some(ix) => ix.get(id).and_then(|(sid, _)| self.catalog.stack(*sid)),
+            None => self.catalog.stack_of(*id),
+        };
         let mut out = StackScope::default();
         let mut seen: HashSet<PhotoId> = HashSet::with_capacity(ids.len());
         let mut done: HashSet<StackId> = HashSet::new();
         for id in ids {
-            let stack = index.get(id).and_then(|(sid, _)| self.catalog.stack(*sid)).filter(|st| st.collapsed);
+            let stack = stack_of(id).filter(|st| st.collapsed);
             let m = match stack {
                 Some(st) if !done.insert(st.id) => continue,
                 Some(st) => self.stack_members(&st.photos, members).map(|m| (st.id, m)),
@@ -94,9 +105,8 @@ impl Session {
     /// The targets of a command (as [`Session::targets`]) with collapsed stacks taken whole. Explicit
     /// `ids` / `id` are taken as given unless `expandStacks: true`.
     pub fn stack_targets(&self, p: &Value, members: Members) -> StackScope {
-        let explicit = p.get("ids").is_some() || p.get("id").is_some();
         let ids = self.targets(p);
-        if explicit && !p.get("expandStacks").and_then(Value::as_bool).unwrap_or(false) {
+        if explicit_ids(p) && !p.get("expandStacks").and_then(Value::as_bool).unwrap_or(false) {
             return StackScope::literal(ids);
         }
         self.expand_stacks(&ids, members)

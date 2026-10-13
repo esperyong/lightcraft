@@ -971,7 +971,7 @@ impl Session {
     /// collapsed stacks counting as their members (see [`crate::stack_scope`]). One selected cell
     /// is the usual state of the grid, not a choice of where to look.
     pub fn bracket_scope(&mut self, p: &Value, members: Members) -> (StackScope, bool) {
-        if p.get("ids").is_some() || p.get("id").is_some() || self.selection.ids.len() >= 2 {
+        if crate::stack_scope::explicit_ids(p) || self.selection.ids.len() >= 2 {
             return (self.stack_targets(p, members), true);
         }
         let vis = self.visible_cloned();
